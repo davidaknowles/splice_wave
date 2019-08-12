@@ -32,7 +32,7 @@ def get_generator(genome_fn, gtf_fn):
 
     genome = utils.get_fasta(genome_fn)
 
-    def get_gene(receptive_field=0):
+    def get_gene(receptive_field=0, max_len = 10000):
         for gene,chrom_strand in genes.items():
             gene_start = np.inf
             gene_end = 0
@@ -43,6 +43,10 @@ def get_generator(genome_fn, gtf_fn):
             transcripts = list(exons[gene].keys())
             num_transcripts = len(transcripts)
             is_exon = np.zeros((num_transcripts, gene_end - gene_start), dtype=np.float32)
+
+            if (gene_end - gene_start) > max_len: 
+                gene_start = np.random.randint(gene_start, gene_end - max_len)
+                gene_end = gene_start + max_len
 
             for transcript_idx,transcript in enumerate(transcripts):
                 exons_here = exons[gene][transcript]
