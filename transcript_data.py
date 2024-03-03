@@ -13,7 +13,7 @@ import gtf_loader
 def get_tpms(fn): # "ENCFF191YXW.tsv.gz"
     tpms = {}
     first = True
-    with gzip.open() as f: 
+    with gzip.open(fn) as f: 
         for l in f: 
             if first: 
                 first=False
@@ -26,14 +26,19 @@ def get_tpms(fn): # "ENCFF191YXW.tsv.gz"
 
 # TODO: mask beyond transcript boundaries (unless want to do altAPA/TSS)
 # Can do this using 2D sample weights
-def get_generator(genome_fn, gtf_fn):
+def get_generator(genome_fn, gtf_fn, tpm_fn=None):
+    
+    tpms = get_tpms(tpm_fn) if tpm_fn else {}
 
     (exons, genes) = gtf_loader.get_exons(gtf_fn)
 
     genome = utils.get_fasta(genome_fn)
 
-    def get_gene(receptive_field=0, max_len = 10000):
+    def get_gene(chroms = None, receptive_field=0, max_len = 10000):
         for gene,chrom_strand in genes.items():
+            if chroms: 
+                if not chrom_strand.chrom in chroms: 
+                    continue
             gene_start = np.inf
             gene_end = 0
             for transcript,exons_here in exons[gene].items():
@@ -42,11 +47,12 @@ def get_generator(genome_fn, gtf_fn):
                     gene_end = max(gene_end, exon.end)
             transcripts = list(exons[gene].keys())
             num_transcripts = len(transcripts)
-            is_exon = np.zeros((num_transcripts, gene_end - gene_start), dtype=np.float32)
-
+            
             if (gene_end - gene_start) > max_len: 
                 gene_start = np.random.randint(gene_start, gene_end - max_len)
                 gene_end = gene_start + max_len
+            
+            is_exon = np.zeros((num_transcripts, gene_end - gene_start), dtype=np.float32)
 
             for transcript_idx,transcript in enumerate(transcripts):
                 exons_here = exons[gene][transcript]
@@ -60,9 +66,11 @@ def get_generator(genome_fn, gtf_fn):
             # TODO: check seq is valid
             if seq is None: continue
             if len(seq) != (gene_end - gene_start + receptive_field * 2): continue
-            start_di = []
+            start_di = [] # record dinucleotides sequences to check indexing is correct
             end_di = []
-            for transcript_idx,transcript in enumerate(transcripts):
+            weights = np.zeros(num_transcripts, dtype=np.float32)
+            for transcript_idx,transcript in enumerate(transcripts): # could probably merge this loop with the one above
+                weights[transcript_idx] = tpms.get(transcript,0.0)
                 exons_here = exons[gene][transcript]
                 for exon_idx,exon in enumerate(exons_here):
                     if exon_idx > 0 and exon_idx < len(exons_here)-1:
@@ -84,7 +92,8 @@ def get_generator(genome_fn, gtf_fn):
             #sample_weights = np.random.rand(is_exon.shape[0])
             # sample_weights = np.random.rand(is_exon.shape[0],is_exon.shape[1]) # requires sample_weight_mode="temporal" in model.compile
             #yield(((is_exon, one_hot), is_exon, sample_weights))
-            yield(((is_exon, one_hot), is_exon))
+            #yield(((is_exon, one_hot), is_exon, weights)
+            yield(is_exon, one_hot, weights)
             
     return(get_gene)
 #%%
