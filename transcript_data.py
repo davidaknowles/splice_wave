@@ -1,14 +1,57 @@
 
 import utils
 import numpy as np
-
+import torch
 import gzip
-
+import collections
+from collections import defaultdict
+from functools import partial
 import os
 
 import gtf_loader
 
-#%%
+def get_mask(
+    B, 
+    T, 
+    to_mask, 
+    missing_rate = 0.15, 
+    cheat_rate = 0.1, 
+    corrupt_rate = 0.1, 
+    min_span = 30, 
+    max_span = 300, 
+    mask_same = False
+): 
+    """
+    Generates a mask for a given tensor `to_mask` to simulate missing data for masked language modeling.
+
+    Parameters:
+        B (int): Batch size.
+        T (int): Length of each sequence.
+        to_mask (torch.Tensor): Tensor to be masked.
+        missing_rate (float, optional): The rate of missing tokens in the generated mask. Defaults to 0.15.
+        cheat_rate (float, optional): The probability that the values of already masked tokens are retained. Defaults to 0.1.
+        corrupt_rate (float, optional): The probability of corrupting already masked tokens. Defaults to 0.1.
+        min_span (int, optional): Minimum span length for masked tokens. Defaults to 30.
+        max_span (int, optional): Maximum span length for masked tokens. Defaults to 300.
+        mask_same (bool, optional): When corrupting whether to use the same token at every position of the span. Set this to true for channels that have very high autocorrelation (e.g., exonic vs intronic). Defaults to False.
+
+    Returns:
+        torch.Tensor: Boolean mask tensor with dimensions (B, T) representing the masked positions.
+    """
+    device = to_mask.device
+    bert_mask = torch.zeros( (B, T), dtype = bool, device = device)
+    for b in range(B): 
+        while bert_mask[b,:].float().mean() < missing_rate: 
+            span = np.random.randint(min_span, max_span)
+            start = np.random.randint(0, T-span)
+            bert_mask[b, start:start + span] = True
+            p = np.random.rand()
+            if p > cheat_rate: 
+                to_mask[b, :, start:start + span] = 0. 
+            if (1.-p) < corrupt_rate: # 0ing already done
+                channel_on = np.random.randint(0, to_mask.shape[1], size=1 if mask_same else span) 
+                to_mask[b, channel_on, torch.arange(start, start+span)] = 1.
+    return bert_mask
 
 def get_tpms(fn): # "ENCFF191YXW.tsv.gz"
     tpms = {}
@@ -26,13 +69,13 @@ def get_tpms(fn): # "ENCFF191YXW.tsv.gz"
 
 # TODO: mask beyond transcript boundaries (unless want to do altAPA/TSS)
 # Can do this using 2D sample weights
-def get_generator(genome_fn, gtf_fn, tpm_fn=None):
+def get_generator(genome_fn, gtf_fn, tpm_fn=None, to_one_hot = True, verbose = False):
     
     tpms = get_tpms(tpm_fn) if tpm_fn else {}
 
     (exons, genes) = gtf_loader.get_exons(gtf_fn)
 
-    genome = utils.get_fasta(genome_fn)
+    genome = utils.get_fasta(genome_fn, verbose = verbose)
 
     def get_gene(chroms = None, receptive_field=0, max_len = 10000):
         for gene,chrom_strand in genes.items():
@@ -86,7 +129,7 @@ def get_generator(genome_fn, gtf_fn, tpm_fn=None):
             #assert(end_correct > .5)
             #print("Canonical start %f end %f (n=%s) strand %s " % (start_correct, end_correct, len(start_di), chrom_strand.strand))
 
-            one_hot = utils.one_hot(seq)
+            one_hot = utils.one_hot(seq) if to_one_hot else seq
             #one_hot = np.tile(utils.one_hot(seq), (is_exon.shape[0],1,1))
             is_exon = is_exon[:,:,np.newaxis]
             #sample_weights = np.random.rand(is_exon.shape[0])
@@ -96,4 +139,74 @@ def get_generator(genome_fn, gtf_fn, tpm_fn=None):
             yield(is_exon, one_hot, weights)
             
     return(get_gene)
-#%%
+
+def collate_helper(x, device = "cpu"): 
+    if isinstance(x[0], (int, np.int32, np.int64)):
+        return torch.LongTensor(x).to(device)
+    elif isinstance(x[0], (float, np.float32, np.float64)):
+        return torch.FloatTensor(x).to(device)
+    elif isinstance(x[0], (np.ndarray, collections.Sequence)):
+        x = [ torch.tensor(g) for g in x ]
+        padding_value = torch.nan if (x[0].dtype==torch.float) else 0.
+        padded_seq = torch.nn.utils.rnn.pad_sequence(x, batch_first = True, padding_value = padding_value).to(device)
+        lengths = torch.tensor([ len(g) for g in x ])
+        return (padded_seq, lengths)
+    else: 
+        raise ValueError(f"Don't know how to collate {type(x[0])}")
+
+def custom_collate(batch, device = "cpu"):
+    return [ collate_helper(g, device = device) for g in zip(*batch) ]
+
+
+class TranscriptDataset(torch.utils.data.IterableDataset):
+
+    def __init__(self, get_gene, chroms, receptive_field, max_len):
+        super().__init__()
+        
+        self.get_gene = get_gene
+        self.chroms = chroms
+        self.receptive_field = receptive_field
+        self.max_len = max_len
+    
+        chars = "ACGT"
+        stoi = defaultdict(lambda: 4, {ch:i for i,ch in enumerate(chars)})
+        itos = defaultdict(lambda: "N", {i:ch for i,ch in enumerate(chars)})
+        
+        self.encode = lambda xx: np.array([stoi[x] for x in xx], dtype = np.int64)
+        self.decode = lambda xx: ''.join([itos[x] for x in xx])
+
+    def __iter__(self):
+        
+        for (is_exon, seq, weights) in self.get_gene(self.chroms, self.receptive_field, max_len = self.max_len): 
+            if weights.sum() == 0: continue
+            to_keep = np.where(weights)[0]
+            is_exon = is_exon[to_keep,:,:]
+            weights = weights[to_keep] # won't be used for now, might sample later
+            weights = weights / weights.sum()
+    
+            to_keep = np.argmax(weights)
+            is_exon = is_exon[to_keep,:,:]
+            weights = weights[to_keep]
+    
+            seq_enc = seq if isinstance(seq, np.ndarray) else self.encode(seq)
+
+            yield is_exon, seq_enc, weights
+
+def get_dataloader(get_gene, chroms, receptive_field = 0, batch_size = 10, max_len = 30000, device = "cpu", num_workers = 0 ): 
+
+    collate_fn = partial( custom_collate, device = device)
+    
+    dataset = TranscriptDataset(
+        get_gene, 
+        chroms,
+        receptive_field, 
+        max_len = max_len
+    )
+
+    return torch.utils.data.DataLoader(
+        dataset, 
+        collate_fn = collate_fn,
+        batch_size=batch_size, 
+        num_workers = num_workers
+    )
+

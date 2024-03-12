@@ -11,7 +11,7 @@ def one_hot(seq, dtype=np.float32):
             arr_rep[i,nuc_arr[seq[i]]] = 1 
     return arr_rep
 
-def get_fasta(fasta_file):
+def get_fasta(fasta_file, verbose = False):
     current_chrom=None
     dic={}
     with gzip.open(fasta_file) as f:
@@ -20,7 +20,7 @@ def get_fasta(fasta_file):
             if l[0]==">":
                 current_chrom=l[1:].strip()
                 dic[current_chrom]=[]
-                print("Loading "+current_chrom)
+                if verbose: print("Loading "+current_chrom)
             else:
                 if not current_chrom is None:
                     dic[current_chrom].append( l.strip() )
