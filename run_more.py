@@ -22,7 +22,7 @@ model = model.to(device)
 #optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
 get_gene = transcript_data.get_generator(
-    os.path.expanduser("~/knowles_lab/index/hg38/hg38.fa.gz"), 
+    os.path.expanduser("hg38.fa.gz"), 
     "gencode.v24.annotation.gtf.gz",
     "ENCFF191YXW.tsv.gz") # neural cell polyA RNA-seq
 

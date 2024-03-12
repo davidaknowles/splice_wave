@@ -1,0 +1,17 @@
+name: torch
+channels:
+  - conda-forge
+  - pytorch
+dependencies:
+  - python=3.10
+  - matplotlib
+  - seaborn
+  - pytorch
+  - cudatoolkit # may need to specify version for this?
+  - pandas>=1.0.0
+  - scikit-learn
+  - scipy
+  - numpy
+  - einops
+  - pip
+    - mamba-ssm

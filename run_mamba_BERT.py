@@ -17,7 +17,7 @@ importlib.reload(tcn)
 pred_meta_task = True
 
 get_gene = transcript_data.get_generator(
-    os.path.expanduser("~/knowles_lab/index/hg38/hg38.fa.gz"), 
+    os.path.expanduser("hg38.fa.gz"), 
     "gencode.v24.annotation.gtf.gz",
     "ENCFF191YXW.tsv.gz") # neural cell polyA RNA-seq
 
@@ -30,8 +30,8 @@ test_chroms = ["chr1"]
 
 # batch_size = 10. Cad done 2^20 ~ 1M tokens per batch. So og is 10x smaller
 
-train_dataloader = transcript_data.get_dataloader(get_gene, train_chroms, receptive_field = 5000, batch_size = 20, device = device, max_len = 10000 )
-test_dataloader = transcript_data.get_dataloader(get_gene, test_chroms, receptive_field = 5000, device = device, max_len = 30000 )
+train_dataloader = transcript_data.get_dataloader(get_gene, train_chroms, receptive_field = 5000, batch_size = 3, device = device, max_len = 10000 )
+test_dataloader = transcript_data.get_dataloader(get_gene, test_chroms, receptive_field = 5000, batch_size = 1, device = device, max_len = 30000 )
 
 optimizer = torch.optim.Adam(model.parameters())
 
@@ -49,7 +49,7 @@ if False: # restart from last checkpoint
 for epoch in range(100): #  range(n_epoch, n_epoch + 40): 
     np.random.seed(int(time.time()))
 
-    metrics = train.one_epoch(model, train_dataloader, optimizer = optimizer, device = device, pred_meta_task = True, eval_LM = False)
+    metrics = train.one_epoch(model, train_dataloader, optimizer = optimizer, device = device, pred_meta_task = pred_meta_task, eval_LM = False)
     #print("TRAIN EPOCH %i complete" % (epoch, train_loss, train_acc)) # TODO fix printing
     train_metrics = {"train_"+key: np.array([d[key] for d in metrics]) for key in keys}
     

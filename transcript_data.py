@@ -145,7 +145,7 @@ def collate_helper(x, device = "cpu"):
         return torch.LongTensor(x).to(device)
     elif isinstance(x[0], (float, np.float32, np.float64)):
         return torch.FloatTensor(x).to(device)
-    elif isinstance(x[0], (np.ndarray, collections.Sequence)):
+    elif isinstance(x[0], (np.ndarray, collections.abc.Sequence)):
         x = [ torch.tensor(g) for g in x ]
         padding_value = torch.nan if (x[0].dtype==torch.float) else 0.
         padded_seq = torch.nn.utils.rnn.pad_sequence(x, batch_first = True, padding_value = padding_value).to(device)
