@@ -14,6 +14,8 @@ import matplotlib.pyplot as plt
 import train
 importlib.reload(tcn)
 
+# TODO merge this code with run_mamba_BERT
+
 pred_meta_task = True
 
 get_gene = transcript_data.get_generator(
@@ -28,14 +30,15 @@ model = spliceAI.SpliceAI_10k(in_channels = 6, out_channels = 5, n_embed = 64).t
 train_chroms = ["chr%i" % i for i in range(2,23)] + ["chrX"]
 test_chroms = ["chr1"]
 
-# batch_size = 10. Cad done 2^20 ~ 1M tokens per batch. So og is 10x smaller
-
+# batch_size = 10. Cadaceus done 2^20 ~ 1M tokens per batch. So og is 10x smaller
 train_dataloader = transcript_data.get_dataloader(get_gene, train_chroms, receptive_field = 5000, batch_size = 20, device = device, max_len = 10000 )
-test_dataloader = transcript_data.get_dataloader(get_gene, test_chroms, receptive_field = 5000, device = device, max_len = 30000 )
+
+# could use bigger batch here but want to be consistent with mamba
+test_dataloader = transcript_data.get_dataloader(get_gene, test_chroms, receptive_field = 5000, batch_size = 1, device = device, max_len = 30000 )
 
 optimizer = torch.optim.Adam(model.parameters())
 
-checkpoint_path = Path("checkpoints_spliceAI64_BERT_predmeta")
+checkpoint_path = Path("checkpoints_spliceAI64_BERT_predmeta2")
 checkpoint_path.mkdir(exist_ok=True)
 
 if False: # restart from last checkpoint
@@ -48,20 +51,19 @@ if False: # restart from last checkpoint
 
 for epoch in range(100): #  range(n_epoch, n_epoch + 40): 
     np.random.seed(int(time.time()))
-    (train_loss,train_acc)=one_epoch(train_dataloader, True)
-    metrics = train.one_epoch(model, train_dataloader, optimizer = optimizer, device = device, pred_meta_task = True, eval_LM = False)
-    print("TRAIN EPOCH %i complete %f %f" % (epoch, train_loss, train_acc)) # TODO fix printing
-    
+
+    train_metrics = train.one_epoch(model, train_dataloader, optimizer = optimizer, device = device, pred_meta_task = pred_meta_task, eval_LM = False)
+    print("TRAIN EPOCH %i complete " % epoch) # TODO fix printing
+    print(" ".join( [ "%s:%.4g" % (k,v) for k,v in train_metrics.items() ] ) )
+
     np.random.seed(1)
-    metrics = train.one_epoch(model, test_dataloader, optimizer = None, device = device, pred_meta_task = True, eval_LM = True)
-    print("TEST EPOCH %i complete %f %f" % (epoch, test_loss, test_acc))
-    torch.save({
+    test_metrics = train.one_epoch(model, test_dataloader, optimizer = None, device = device, pred_meta_task = True, eval_LM = True)
+    print(" ".join( [ "%s:%.4g" % (k,v) for k,v in test_metrics.items() ] ) )
+    to_save = {
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'train_loss': train_loss, 
-            'test_loss': test_loss,
-            'train_acc': train_acc, 
-            'test_acc' : test_acc
-            }, checkpoint_path / ("%i.pt" % epoch))
-
+            'optimizer_state_dict': optimizer.state_dict()
+    }
+    to_save.update(train_metrics)
+    to_save.update(test_metrics)
+    torch.save(to_save, checkpoint_path / ("%i.pt" % epoch))

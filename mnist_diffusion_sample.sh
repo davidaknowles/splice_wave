@@ -9,4 +9,4 @@
 
 source ~/venv/mamba_ssm/bin/activate
 
-python run_spliceAI_BERT_full.py
+python mnist_diffusion_sample.py

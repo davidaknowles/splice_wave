@@ -9,4 +9,4 @@
 
 source ~/venv/mamba_ssm/bin/activate
 
-python run_mamba.py
+python run_diffusion.py

@@ -27,14 +27,17 @@ Pure mambanet LM of seq+is_exon is hard to decode: i.e. fixing seq and trying to
 BERT style MLM training, with SpliceAI arch. Isn't learning seq->is_exon well. 
  - with pure masking (no cheat/corrupt) the LM is worse with is_exon context than without :( (checkpoints_spliceAI_BERT)
  - but with 80/10/10 mask/cheat/corrupt the MLM benefits a lot from the is_exon context (test seq_loss down to ~0.2 from ~1.5). Note log(4)=1.4 so 1.5 is possibly worse than random (checkpoints_spliceAI_BERT_801010). Not sure if predicting seq->is_exon better than random? Def not well anyway.
- - Next is to add seq->is_exon as an additional task in each batch. 
+ - Next is to add seq->is_exon as an additional task in each batch.
+ - SpliceAI 64 channel does a little better than Mamba on is_exon prediction, but a little worse on the MLM task.
+ - 
 
 ## To try/to do: 
 BiMambaNet rather than SpliceAI arch for BERT MLM
 Iterative generate isoform from MLM: sample most confident position, then condition, iterate. 
 Diffusion model. Can this do conditioning? Was hoping yes through the Gaussian? 
  - https://github.com/madaan/minimal-text-diffusion
+ - Probably better codebase: https://github.com/lucidrains/denoising-diffusion-pytorch
  - Confusing Ganguli paper talks about conditioning: https://arxiv.org/pdf/1503.03585.pdf
- - The "RePaint" paper https://arxiv.org/abs/2201.09865 does it in a somewhat heuristic resampling approach
+ - The "RePaint" paper https://arxiv.org/abs/2201.09865 does it in a somewhat heuristic resampling approach. Would training time resampling be helpful? https://arxiv.org/pdf/2208.04202.pdf
  - Nice think would be you can train the model then try diff conditioning approaches
 

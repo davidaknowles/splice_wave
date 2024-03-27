@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import numpy as np
 
 # will probably want a different version for Mamba: everything handled so differently
-def one_epoch(model, dataloader, optimizer = None, device = "cpu", pred_meta_task = False, eval_LM = False):
+def one_epoch(model, dataloader, optimizer = None, device = "cpu", pred_meta_task = False, eval_LM = False, max_batches = None):
     rf = model.receptive_field
     
     train = not optimizer is None
@@ -108,5 +108,9 @@ def one_epoch(model, dataloader, optimizer = None, device = "cpu", pred_meta_tas
             last_log_time = time.time()
 
         batch_counter += 1
+
+        if (not max_batches is None) and (batch_counter >= max_batches): break
     
-    return metrics
+    keys = list(metrics[0].keys())
+    prefix = "train_" if train else "test_"
+    return {prefix+key: np.mean([d[key] for d in metrics]) for key in keys}

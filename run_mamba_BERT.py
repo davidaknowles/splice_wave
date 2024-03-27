@@ -12,7 +12,7 @@ import spliceAI
 import tcn
 import matplotlib.pyplot as plt
 import train
-importlib.reload(tcn)
+importlib.reload(train)
 
 pred_meta_task = True
 
@@ -25,7 +25,7 @@ checkpoint_path.mkdir(exist_ok=True)
 
 optimizer = torch.optim.Adam(model.parameters())
 
-if True: # restart from last checkpoint
+if False: # restart from last checkpoint
     import glob
     n_epoch = len(list(checkpoint_path.glob("*.pt")))
     checkpoint = torch.load(checkpoint_path / ("%i.pt" % (n_epoch-1)))
@@ -50,16 +50,14 @@ test_dataloader = transcript_data.get_dataloader(get_gene, test_chroms, receptiv
 for epoch in range(100): #  range(n_epoch, n_epoch + 40): 
     np.random.seed(int(time.time()))
 
-    metrics = train.one_epoch(model, train_dataloader, optimizer = optimizer, device = device, pred_meta_task = pred_meta_task, eval_LM = False)
-    #print("TRAIN EPOCH %i complete" % (epoch, train_loss, train_acc)) # TODO fix printing
-    keys = list(metrics[0].keys())
-    train_metrics = {"train_"+key: np.array([d[key] for d in metrics]) for key in keys}
-    
+    train_metrics = train.one_epoch(model, train_dataloader, optimizer = optimizer, device = device, pred_meta_task = pred_meta_task, eval_LM = False)
+    print("TRAIN EPOCH %i complete " % epoch) # TODO fix printing
+    print(" ".join( [ "%s:%.4g" % (k,v) for k,v in train_metrics.items() ] ) )
+
     np.random.seed(1)
-    metrics = train.one_epoch(model, test_dataloader, optimizer = None, device = device, pred_meta_task = True, eval_LM = True)
-    keys = list(metrics[0].keys())
-    test_metrics = {"test_"+key: np.array([d[key] for d in metrics]) for key in keys}
-    #print("TEST EPOCH %i complete %f %f" % (epoch, test_loss, test_acc))
+    test_metrics = train.one_epoch(model, test_dataloader, optimizer = None, device = device, pred_meta_task = True, eval_LM = True)
+    print(" ".join( [ "%s:%.4g" % (k,v) for k,v in test_metrics.items() ] ) )
+
     to_save = {
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
