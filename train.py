@@ -42,14 +42,22 @@ def one_epoch(model, dataloader, optimizer = None, device = "cpu", pred_meta_tas
         B,C,T = is_exon.shape # batch, channels, length
 
         # TODO: handle multiple meta channels (need to think carefully about joint masking)
-        meta = torch.zeros( B, 2, T + rf * 2, device = device)  # one hot, zero for missing
+        meta = torch.zeros( B, 2, T + rf * 2, device = "cpu")  # one hot, zero for missing
         meta[:, 0, rf:-rf] = is_exon[:,0,:]
         meta[:, 1, rf:-rf] = (1.-is_exon[:,0,:])
+        
+        mytime = time.time()
 
         meta_mask = transcript_data.get_mask(B, T, meta, min_span = 30, max_span = 300, mask_same = True) 
     
-        one_hot_masked = one_hot.clone().detach()
+        one_hot_masked = one_hot.clone().detach().cpu()
         seq_mask = transcript_data.get_mask(B, T, one_hot_masked, min_span = 1, max_span = 10, mask_same = False)
+        
+        meta = meta.to(device)
+        meta_mask = meta_mask.to(device)
+        one_hot_masked = one_hot_masked.to(device)
+        seq_mask = seq_mask.to(device)
+        print("Mask time", time.time() - mytime)
     
         input = torch.concat( (meta, one_hot_masked), 1)
         
@@ -107,11 +115,11 @@ def one_epoch(model, dataloader, optimizer = None, device = "cpu", pred_meta_tas
             loss.backward()
             optimizer.step()
             
-            if XLA_AVAILABLE: 
-                xm.mark_step()
-        
         metrics[-1][ "loss" ] = loss.item()
         metrics[-1][ "time" ] = time.time() - start_time
+
+        if XLA_AVAILABLE: 
+            xm.mark_step()
 
         if (time.time() - last_log_time) > 60.0: 
             print("%i" % batch_counter, end = '\r')
