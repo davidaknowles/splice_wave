@@ -8,7 +8,6 @@ import torch.nn.functional as F
 import numpy as np
 from pathlib import Path
 import importlib
-import spliceAI
 import tcn
 import matplotlib.pyplot as plt
 import train

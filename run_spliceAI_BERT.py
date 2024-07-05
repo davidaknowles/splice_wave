@@ -9,7 +9,6 @@ import numpy as np
 from pathlib import Path
 import importlib
 import spliceAI
-import matplotlib.pyplot as plt
 importlib.reload(transcript_data)
 
 get_gene = transcript_data.get_generator(
