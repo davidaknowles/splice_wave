@@ -10,20 +10,31 @@ from pathlib import Path
 import importlib
 import spliceAI
 import tcn
-import matplotlib.pyplot as plt
 import train
 importlib.reload(tcn)
+
+
+try:
+    import torch_xla.core.xla_model as xm
+    XLA_AVAILABLE = True
+except ImportError as e:
+    print(f"XLA not available, will use GPU or CPU")
+    XLA_AVAILABLE = False
+
+
+pred_meta_task = True
+
+device = xm.xla_device() if XLA_AVAILABLE else torch.device(
+    "cuda" if torch.cuda.is_available() else "cpu")
 
 # TODO merge this code with run_mamba_BERT
 
 pred_meta_task = True
 
 get_gene = transcript_data.get_generator(
-    os.path.expanduser("~/knowles_lab/index/hg38/hg38.fa.gz"), 
+    os.path.expanduser("hg38.fa.gz"), 
     "gencode.v24.annotation.gtf.gz",
     "ENCFF191YXW.tsv.gz") # neural cell polyA RNA-seq
-
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 model = spliceAI.SpliceAI_10k(in_channels = 6, out_channels = 5, n_embed = 64).to(device)
 
