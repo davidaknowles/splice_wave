@@ -13,14 +13,12 @@ import tcn
 import train
 importlib.reload(tcn)
 
-
 try:
     import torch_xla.core.xla_model as xm
     XLA_AVAILABLE = True
 except ImportError as e:
     print(f"XLA not available, will use GPU or CPU")
     XLA_AVAILABLE = False
-
 
 pred_meta_task = True
 

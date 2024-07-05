@@ -42,6 +42,7 @@ def get_mask(
     bert_mask = torch.zeros( (B, T), dtype = bool, device = device)
     for b in range(B): 
         while bert_mask[b,:].float().mean() < missing_rate: 
+            #print(bert_mask[b,:].float().mean(), end = "\r")  
             span = np.random.randint(min_span, max_span)
             start = np.random.randint(0, T-span)
             bert_mask[b, start:start + span] = True

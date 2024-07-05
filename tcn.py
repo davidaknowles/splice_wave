@@ -4,8 +4,11 @@ from torch.nn.utils import weight_norm
 import torch.nn.functional as F
 import numpy as np
 import transcript_data
-from mamba_ssm import Mamba
-
+try: 
+    from mamba_ssm import Mamba
+except ImportError as e: 
+    print("Warning mamba not available") 
+    
 def my_bce_loss(seq_mask, mask, logits, one_hot):
     seq_eval_mask = seq_mask & ~mask[:,0,:] 
     seq_out = logits.permute(0, 2, 1)
