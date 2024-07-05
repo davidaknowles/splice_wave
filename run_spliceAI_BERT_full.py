@@ -9,10 +9,7 @@ import numpy as np
 from pathlib import Path
 import importlib
 import spliceAI
-import tcn
 import train
-importlib.reload(tcn)
-
 
 try:
     import torch_xla.core.xla_model as xm
@@ -21,15 +18,12 @@ except ImportError as e:
     print(f"XLA not available, will use GPU or CPU")
     XLA_AVAILABLE = False
 
-
-pred_meta_task = True
-
 device = xm.xla_device() if XLA_AVAILABLE else torch.device(
     "cuda" if torch.cuda.is_available() else "cpu")
 
 # TODO merge this code with run_mamba_BERT
 
-pred_meta_task = True
+pred_meta_task = False
 
 get_gene = transcript_data.get_generator(
     os.path.expanduser("hg38.fa.gz"), 
