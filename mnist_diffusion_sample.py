@@ -4,9 +4,11 @@ from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
 import denoising_diffusion_pytorch
 import pandas as pd
+import numpy as np
 from torchvision import utils
 import math
 #from denoising_diffusion_pytorch import Unet, GaussianDiffusion, Trainer
+from torch.utils.data import TensorDataset, DataLoader
 
 import importlib
 importlib.reload(denoising_diffusion_pytorch)
@@ -18,6 +20,8 @@ if device == "cpu":
 
 #train_ds = datasets.MNIST('../data', train=True, download=True, transform=transforms.ToTensor()).data / 255.
 test_ds = datasets.MNIST('../data', train=False, transform=transforms.ToTensor()).data / 255.
+
+test_dl = DataLoader(test_ds, batch_size=128, shuffle=False)
 
 model = denoising_diffusion_pytorch.Unet(
     dim = 64,
@@ -53,31 +57,38 @@ trainer.load(100) # this handles moving model to device
 res_folder = trainer.results_folder / "impute"
 res_folder.mkdir(exist_ok=True)
 
-num_samples = 1024
-x_known = test_ds[:num_samples,None,:,:]
-x_missing = x_known.clone()
+#num_samples = 1024
 
-mae = {}
-x_missing[:,:,:14,:] = 0.
-
-utils.save_image(x_known, res_folder / "original.png", nrow = int(math.sqrt(num_samples)))
-
-utils.save_image(x_missing, res_folder / "missing.png", nrow = int(math.sqrt(num_samples)))
-
-x_missing[:,:,:14,:] = torch.nan
 model = trainer.ema.ema_model
 
+save_images = False
+
+mae = {}
+
 for U in [1, 3, 5, 10]: 
-    
-    x_sampled = model.p_conditional_sample_loop(x_missing.to(device), U = U).cpu()
-    
-    utils.save_image(x_sampled, res_folder / f"imputed{U}.png", nrow = int(math.sqrt(num_samples)))
-    
-    err = (x_sampled - x_known)[~x_missing.isnan()]
-    
-    mae[U] = err.abs().mean().item()
-    
-    print(mae)
+
+    errs = []
+    for x_known in test_dl: 
+        x_known = x_known[:,None,:,:]
+        x_missing = x_known.clone()
+        x_missing[:,:,:14,:] = 0.
+
+        if save_images: 
+            utils.save_image(x_known, res_folder / "original.png", nrow = int(math.sqrt(num_samples)))        
+            utils.save_image(x_missing, res_folder / "missing.png", nrow = int(math.sqrt(num_samples)))
+        
+        x_missing[:,:,:14,:] = torch.nan
+        
+        x_sampled = model.p_conditional_sample_loop(x_missing.to(device), U = U).cpu()
+
+        if save_images: 
+            utils.save_image(x_sampled, res_folder / f"imputed{U}.png", nrow = int(math.sqrt(num_samples)))
+        
+        err = (x_sampled - x_known)[~x_missing.isnan()]
+
+        errs.append( err.abs().mean().item() )
+
+    mae[U] = np.mean( errs )
     
     df = pd.DataFrame(list(mae.items()), columns=['U', 'MAE'])
     

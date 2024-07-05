@@ -74,8 +74,22 @@ for ((is_exon, lengths_), (seq, lengths), weights) in dataloader:
 
 mask = is_exon.isnan()
 
+plt.plot( is_exon[0,:,0].detach().cpu().numpy())
+
+is_exon_0 = torch.zeros_like(is_exon)
+
+def get_loss(is_exon): 
+    seq_out, meta_out = model(seq[:,:-1], is_exon.nan_to_num()[:,:-1,:])
+    meta_out_masked = meta_out[ ~mask[:,1:,:] ]
+    is_exon_masked = is_exon[:,1:,:][ ~mask[:,1:,:] ]
+    meta_loss = F.binary_cross_entropy_with_logits(meta_out_masked, is_exon_masked)
+    return meta_loss.item()
+
+get_loss(is_exon)
+get_loss(is_exon_0)
+
 is_exon_logit = torch.full_like(is_exon, -1.)
-        
+
 is_exon_logit.requires_grad = True
 
 optimizer = torch.optim.Adam([is_exon_logit], lr = 0.1)

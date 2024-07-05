@@ -421,6 +421,9 @@ class GaussianDiffusion1D(nn.Module):
         model,
         *,
         seq_length,
+        likelihood = "normal", # binary, cat
+        learn_embeddings = True, 
+        vocab_size = None,
         timesteps = 1000,
         sampling_timesteps = None,
         objective = 'pred_noise',
@@ -430,6 +433,7 @@ class GaussianDiffusion1D(nn.Module):
     ):
         super().__init__()
         self.model = model
+        self.likelihood = likelihood
         self.channels = self.model.channels
         self.self_condition = self.model.self_condition
 
@@ -508,6 +512,16 @@ class GaussianDiffusion1D(nn.Module):
 
         self.normalize = normalize_to_neg_one_to_one if auto_normalize else identity
         self.unnormalize = unnormalize_to_zero_to_one if auto_normalize else identity
+
+        self.learn_embeddings = learn_embeddings
+        if learn_embeddings: 
+            in_channels = default(vocab_size, model.channels)
+            out_channels = (model.channels-1) if likelihood=="cat" else model.channels
+            self.normalize = nn.Conv1d(in_channels, out_channels, 1)
+            if likelihood == "cat": 
+                self.lm_head = nn.ConvTranspose1d(out_channels, in_channels, 1) # bias = False? 
+                with torch.no_grad():
+                    self.lm_head.weight = self.normalize.weight # this is a reference
 
     def predict_start_from_noise(self, x_t, t, noise):
         """ All these "predict" functions start from eq 4 in DDPM
@@ -607,7 +621,7 @@ class GaussianDiffusion1D(nn.Module):
         return x_tm1, x_start
 
     @torch.no_grad()
-    def p_sample_loop(self, shape):
+    def p_sample_loop(self, shape, clip_denoised = True):
         """ Algo 2 in DDPM paper """ 
 
         batch, device = shape[0], self.betas.device
@@ -618,10 +632,41 @@ class GaussianDiffusion1D(nn.Module):
 
         for t in tqdm(reversed(range(0, self.num_timesteps)), desc = 'sampling loop time step', total = self.num_timesteps):
             self_cond = x_start if self.self_condition else None
-            x, x_start = self.p_sample(x, t, self_cond)
+            x, x_start = self.p_sample(x, t, self_cond, clip_denoised = clip_denoised)
         
-        return self.unnormalize(img) # optionally map from [-1,1] to [0,1]
+        return self.unnormalize(x) # optionally map from [-1,1] to [0,1]
 
+    @torch.inference_mode()
+    def p_conditional_sample_loop(self, x_fixed, U = 1, return_all_timesteps = False, clip_denoised = True):
+
+        x_fixed = self.normalize(x_fixed)
+        
+        img = torch.randn_like(x_fixed)
+        imgs = [img]
+
+        x_start = None
+
+        mask = ~x_fixed.isnan()
+
+        for t in tqdm(reversed(range(0, self.num_timesteps)), desc = 'sampling loop time step', total = self.num_timesteps):
+            self_cond = x_start if self.self_condition else None
+            for u in range(U): 
+                # beta_t is the variance going from x_(t-1) to x_t i.e. q(x_t|x_(t-1)) = sqrt(1-beta_t) x_(t-1) + beta_t randn
+                # img at this point is x_t
+                img, x_start = self.p_sample(img, t, self_cond, clip_denoised = clip_denoised) # img is x_(t-1)
+                batched_times = torch.full((x_fixed.shape[0],), t, device = x_fixed.device, dtype = torch.long)
+                img_known = self.q_sample(x_fixed, batched_times) # should be ok with the Nans? 
+                img[mask] = img_known[mask] # does this handle t=0 correctly? 
+                if u < (U-1): # only do this if not the last iteration of u
+                    img = img * torch.sqrt(1. - self.betas[t]) + torch.sqrt(self.betas[t]) * torch.randn_like(x_fixed)
+            
+            imgs.append(img)
+
+        ret = img if not return_all_timesteps else torch.stack(imgs, dim = 1)
+
+        ret = self.unnormalize(ret)
+        return ret
+    
     @torch.no_grad()
     def ddim_sample(self, shape, clip_denoised = True):
         """ Denoising Diffusion Implicit Models """ 
@@ -688,19 +733,22 @@ class GaussianDiffusion1D(nn.Module):
 
         return img
 
+    def q_mean_std(self, x_start, t): 
+        return extract(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start, extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape)
+
     @autocast(enabled = False)
     def q_sample(self, x_start, t, noise=None):
         """ Sample q(x_t|x_start) with optionally specified noise epsilon
         This corresponds to equation 4 from the DDPM paper
         """
         noise = default(noise, lambda: torch.randn_like(x_start))
-
-        return (
-            extract(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start +
-            extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
-        )
+        q_mean, q_std = self.q_mean_std(x_start, t)
+        return q_mean + q_std * noise
 
     def p_losses(self, x_start, t, noise = None):
+
+        x_start = self.normalize(x_start) 
+        
         b, c, n = x_start.shape
         noise = default(noise, lambda: torch.randn_like(x_start))
 
@@ -735,10 +783,87 @@ class GaussianDiffusion1D(nn.Module):
         loss = loss * extract(self.loss_weight, t, loss.shape)
         return loss.mean()
 
+    def p_losses_binary(self, x_start_01, t, noise = None):
+
+        x_start_mean = self.normalize(x_start_01) # note this can be an embedding now in the binary setting
+        
+        # x_start_mean is the embedding, x_start_01 is the o.g. binary "image" 
+        b, c, n = x_start_mean.shape
+        noise = default(noise, lambda: torch.randn_like(x_start_mean))
+
+        std = extract( # adds only v small amount of noise, could probably ignore? 
+            self.sqrt_one_minus_alphas_cumprod,
+            torch.tensor([0]).to(x_start_mean.device),
+            x_start_mean.shape,
+        )
+        x_start = x_start_mean + std * torch.randn_like(x_start_mean)
+        
+        # noise sample
+        x = self.q_sample(x_start = x_start, t = t, noise = noise)
+
+        # predict and take gradient step 
+        model_out = self.model_predictions(x, t) # 'pred_noise', 'pred_x_start'
+
+        loss = F.mse_loss(model_out.pred_x_start, x_start) # not handling t=0 case specially here like they do in the paper
+        #loss = 0.
+        
+        if self.learn_embeddings: # important to prevent big embeddings that cheat
+            qT_mean, _ = self.q_mean_std(x_start, torch.LongTensor([self.num_timesteps - 1]).to(x_start.device))
+            loss += (qT_mean**2).mean()
+
+        loss += F.binary_cross_entropy_with_logits(x_start, x_start_01) 
+        #loss = F.binary_cross_entropy_with_logits(model_out.pred_x_start, x_start_01) 
+        
+        return loss
+
+    def p_losses_cat(self, x_start_01, t, noise = None):
+
+        is_exon = x_start_01[:, [0], :] * 2. - 1. # is_exon. [0] to keep dim
+        embed_seq = self.normalize(x_start_01[:, 1:, :]) # note this can be an embedding now in the binary setting
+        x_start_mean = torch.concat( (is_exon, embed_seq), 1)
+        
+        # x_start_mean is the embedding, x_start_01 is the o.g. binary "image" 
+        b, c, n = x_start_mean.shape
+        noise = default(noise, lambda: torch.randn_like(x_start_mean))
+
+        std = extract( # adds only v small amount of noise, could probably ignore? 
+            self.sqrt_one_minus_alphas_cumprod,
+            torch.tensor([0]).to(x_start_mean.device),
+            x_start_mean.shape,
+        )
+        x_start = x_start_mean + std * torch.randn_like(x_start_mean)
+        
+        # noise sample
+        x = self.q_sample(x_start = x_start, t = t, noise = noise)
+
+        # predict and take gradient step 
+        model_out = self.model_predictions(x, t) # 'pred_noise', 'pred_x_start'
+
+        loss = F.mse_loss(model_out.pred_x_start, x_start) # not handling t=0 case specially here like they do in the paper
+        #loss = 0.
+        
+        if self.learn_embeddings: # important to prevent big embeddings that cheat
+            qT_mean, _ = self.q_mean_std(x_start, torch.LongTensor([self.num_timesteps - 1]).to(x_start.device))
+            loss += (qT_mean**2).mean()
+
+        # loss += F.binary_cross_entropy_with_logits(x_start, x_start_01) # not learning is_exon embedding
+        #loss = F.binary_cross_entropy_with_logits(model_out.pred_x_start, x_start_01) 
+        logits = self.lm_head(model_out.pred_x_start[:,1:,:])
+        logits_norm = logits - logits.logsumexp(1, keepdim = True)
+        loss = loss - (x_start_01[:,1:,:] * logits_norm).sum(1).mean() 
+        
+        return loss
+
     def forward(self, img, *args, **kwargs):
         b, c, n, device, seq_length, = *img.shape, img.device, self.seq_length
         assert n == seq_length, f'seq length must be {seq_length}'
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
 
-        img = self.normalize(img)
-        return self.p_losses(img, t, *args, **kwargs)
+
+        if self.likelihood == "normal": 
+            return self.p_losses(img, t, *args, **kwargs)
+        elif self.likelihood == "binary":
+            return self.p_losses_binary(img, t, *args, **kwargs)
+        else: 
+            return self.p_losses_cat(img, t, *args, **kwargs)
+

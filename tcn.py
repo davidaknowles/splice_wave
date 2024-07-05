@@ -36,6 +36,15 @@ class MambaBlock(nn.Module):
     def forward(self, x): # x must be batch x time x channels
         return self.ln(x + self.mixer(x))
 
+def MambaBlockPerm(MambaBlock): 
+    def __init__(self, n_embed) -> None:
+        super().__init__(n_embed)
+
+    def forward(self, x):
+        x = x.permute(0,2,1)
+        x = super().forward(x)
+        return x.permute(0,2,1)
+
 class BidirMambaBlock(nn.Module):
     def __init__(self, n_embed, weight_tie = False) -> None:
         super().__init__()
@@ -123,7 +132,7 @@ class ResBlock(nn.Module):
         return F.relu(out + x)
 
 class TemporalConvNet(nn.Module):
-    def __init__(self, num_channels, kernel_size=2, dropout=0.0):
+    def __init__(self, num_channels, causal_channels = 1, bidir_channels = 4, kernel_size=2, dropout=0.0, mamba = True):
         super().__init__()
 
         num_levels = len(num_channels)
@@ -145,16 +154,17 @@ class TemporalConvNet(nn.Module):
 
             assert(rf % 2 == 0)
 
-            channels_in = 5 if i==0 else num_channels[i-1] # *2
+            channels_in = (causal_channels+bidir_channels) if i==0 else num_channels[i-1] # *2 # for causal net
             if i==0: 
-                self.in_proj = nn.Linear(channels_in, num_channels[i]) # or could use nn.Embedding? maybe equivalent...
-            #TemporalBlock(channels_in, num_channels[i], kernel_size, dilation, rf, dropout=dropout)
-            self.causal_convs.append( MambaBlock(num_channels[i])  )
-            channels_in = 4 if i==0 else num_channels[i-1]
+                self.in_proj = nn.Conv1d(channels_in, num_channels[i], 1) 
+                #nn.Linear(channels_in, num_channels[i]) # or could use nn.Embedding? maybe equivalent...
+            temporal_block = MambaBlockPerm(num_channels[i]) if mamba else TemporalBlock(num_channels[i], num_channels[i], kernel_size, dilation, rf, dropout=dropout)
+            self.causal_convs.append( temporal_block ) 
+            channels_in = bidir_channels if i==0 else num_channels[i-1] # for bidir net
             self.noncausal_convs.append( ResBlock(channels_in, num_channels[i], kernel_size, dilation, 0, dropout=dropout )) # int(padding / 2)
         
         #self.causal_convs.append( nn.Linear(num_channels[num_levels-1]*2, 1) )
-        self.out_proj = nn.Conv1d(num_channels[num_levels-1], 1, 1, stride=1, padding=0, dilation=1) 
+        self.out_proj = nn.Conv1d(num_channels[num_levels-1], causal_channels, 1, stride=1, padding=0, dilation=1) 
         self.receptive_field = sum(self.receptive_fields)
     
     def forward(self, causal_net, noncausal_net):
@@ -167,15 +177,15 @@ class TemporalConvNet(nn.Module):
             causal_len = causal_net.shape[2]
             noncausal_len = noncausal_net.shape[2]
             to_trim = int((noncausal_len - causal_len)/2)
-            noncausal_net_trimmed = noncausal_net[:,:,to_trim:-to_trim]
+            noncausal_net_trimmed = noncausal_net[:,:,to_trim:-to_trim] if (to_trim > 0) else noncausal_net
 
             # B x C x L
             concat = torch.cat( [causal_net, noncausal_net_trimmed.expand(nbatch,-1,-1)], axis=1) if i==0 else (causal_net + noncausal_net_trimmed)
-            concat = concat.permute(0,2,1) # now B x L x C
+            #concat = concat.permute(0,2,1) # now B x L x C
             if i==0: 
                 concat = self.in_proj(concat)
             causal_net = self.causal_convs[i](concat)
-            causal_net = causal_net.permute(0,2,1) # back to B x C x L
+            #causal_net = causal_net.permute(0,2,1) # back to B x C x L
             
             noncausal_net = self.noncausal_convs[i](noncausal_net)
 
