@@ -14,9 +14,19 @@ import matplotlib.pyplot as plt
 import train
 importlib.reload(train)
 
+
+try:
+    import torch_xla.core.xla_model as xm
+    XLA_AVAILABLE = True
+except ImportError as e:
+    print(f"XLA not available, will use GPU or CPU")
+    XLA_AVAILABLE = False
+
+
 pred_meta_task = True
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = xm.xla_device() if XLA_AVAILABLE else torch.device(
+    "cuda" if torch.cuda.is_available() else "cpu")
 
 model = tcn.MambaOneHotNet(in_channels = 6, out_channels = 5, n_embed = 64, n_layers = 8, receptive_field = 5000, bidir = True).to(device)
 

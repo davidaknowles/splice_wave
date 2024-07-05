@@ -5,6 +5,13 @@ import time
 import torch.nn.functional as F
 import numpy as np
 
+try:
+    import torch_xla.core.xla_model as xm
+    XLA_AVAILABLE = True
+except ImportError as e:
+    print(f"XLA not available, will use GPU or CPU")
+    XLA_AVAILABLE = False
+
 # will probably want a different version for Mamba: everything handled so differently
 def one_epoch(model, dataloader, optimizer = None, device = "cpu", pred_meta_task = False, eval_LM = False, max_batches = None):
     rf = model.receptive_field
@@ -99,6 +106,9 @@ def one_epoch(model, dataloader, optimizer = None, device = "cpu", pred_meta_tas
         if train:
             loss.backward()
             optimizer.step()
+            
+            if XLA_AVAILABLE: 
+                xm.mark_step()
         
         metrics[-1][ "loss" ] = loss.item()
         metrics[-1][ "time" ] = time.time() - start_time
