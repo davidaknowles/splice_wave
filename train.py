@@ -7,6 +7,7 @@ import numpy as np
 
 try:
     import torch_xla.core.xla_model as xm
+    import torch_xla.debug.metrics as met
     XLA_AVAILABLE = True
 except ImportError as e:
     print(f"XLA not available, will use GPU or CPU")
@@ -29,6 +30,8 @@ def one_epoch(model, dataloader, optimizer = None, device = "cpu", pred_meta_tas
 
         metrics.append({})
         
+        #met.mark_step()
+
         if train: 
             optimizer.zero_grad()
 
@@ -59,7 +62,7 @@ def one_epoch(model, dataloader, optimizer = None, device = "cpu", pred_meta_tas
         seq_mask = seq_mask.to(device)
         print("Mask time", time.time() - mytime)
     
-        input = torch.concat( (meta, one_hot_masked), 1)
+        input = torch.concat( (meta, one_hot_masked), 1) # shouldn't this be meta masked? 
         
         output = model(input.nan_to_num()) # spliceAI uses conv which want B x C x T
     
@@ -120,6 +123,8 @@ def one_epoch(model, dataloader, optimizer = None, device = "cpu", pred_meta_tas
 
         if XLA_AVAILABLE: 
             xm.mark_step()
+            #met.mark_step()  # End marker
+            print(met.metrics_report()) 
 
         if (time.time() - last_log_time) > 60.0: 
             print("%i" % batch_counter, end = '\r')

@@ -16,7 +16,6 @@ def my_bce_loss(seq_mask, mask, logits, one_hot):
     one_hot_t = one_hot.permute(0, 2, 1) # no op
     return - (one_hot_t[ seq_eval_mask ] * seq_out_norm[ seq_eval_mask ]).sum() / seq_eval_mask.sum() 
 
-
 class Chomp1d(nn.Module): 
     def __init__(self, chomp_size):
         super(Chomp1d, self).__init__()

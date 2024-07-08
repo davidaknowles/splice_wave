@@ -1,7 +1,9 @@
 
 import utils
+import one_hot
 import numpy as np
 import torch
+import torch.nn.functional as F
 import gzip
 import collections
 from collections import defaultdict
@@ -54,6 +56,72 @@ def get_mask(
                 to_mask[b, channel_on, torch.arange(start, start+span)] = 1.
     return bert_mask
 
+def get_mask_np(
+    to_mask, # T x C
+    missing_rate = 0.15, 
+    cheat_rate = 0.1, 
+    corrupt_rate = 0.1, 
+    min_span = 30, 
+    max_span = 300, 
+    mask_same = False
+): 
+    T = to_mask.shape[0]
+    bert_mask = np.zeros(T, dtype = bool)
+    while bert_mask.mean() < missing_rate: 
+        #print(bert_mask[b,:].float().mean(), end = "\r")  
+        span = np.random.randint(min_span, max_span)
+        start = np.random.randint(0, T-span)
+        bert_mask[start:start + span] = True
+        p = np.random.rand()
+        if p > cheat_rate: 
+            to_mask[start:start + span, :] = 0. 
+        if (1.-p) < corrupt_rate: # 0ing already done
+            channel_on = np.random.randint(0, to_mask.shape[1], size=1 if mask_same else span) 
+            to_mask[np.arange(start, start+span), channel_on] = 1.
+    return bert_mask
+
+# Function to generate a boolean vector with autocorrelation
+def generate_autocorrelated_mask(size, true_prob=0.15, autocorr_len=2):
+    # Step 1: Generate random noise
+    noise = torch.randn(size) * (torch.rand(size) < 0.5)
+    
+    # Step 2: Smooth the noise using a Gaussian filter
+    noise = noise[None,None,:] # Add batch and channel dimensions
+    smoothed_noise = F.conv1d(noise, weight=torch.ones(1,1,autocorr_len*2+1), padding=autocorr_len)
+    smoothed_noise = smoothed_noise.squeeze()  # Remove batch and channel dimensions
+    
+    # Step 3: Normalize and threshold the smoothed noise
+    threshold = torch.quantile(smoothed_noise, 1 - true_prob)
+
+    return (smoothed_noise > threshold).numpy()
+
+def get_mask_np_efficient(
+    to_mask, # T x C
+    missing_rate = 0.15, 
+    cheat_rate = 0.1, 
+    corrupt_rate = 0.1
+): 
+    T,C = to_mask.shape
+    
+    regular_mask = generate_autocorrelated_mask(
+        T, 
+        true_prob = missing_rate * (1. - cheat_rate - corrupt_rate))
+    to_mask[regular_mask, :] = 0.
+    
+    cheat_mask = generate_autocorrelated_mask(
+        T, 
+        true_prob = missing_rate * cheat_rate)
+    
+    corrupt_mask = generate_autocorrelated_mask(
+        T,
+        true_prob = missing_rate * corrupt_rate)
+    
+    to_mask[corrupt_mask, :] = 0.
+    channel_on = np.random.randint(0, 4, size=int(corrupt_mask.sum()))
+    to_mask[corrupt_mask,channel_on] = 1.
+
+    return regular_mask | cheat_mask | corrupt_mask
+
 def get_tpms(fn): # "ENCFF191YXW.tsv.gz"
     tpms = {}
     first = True
@@ -78,7 +146,7 @@ def get_generator(genome_fn, gtf_fn, tpm_fn=None, to_one_hot = True, verbose = F
 
     genome = utils.get_fasta(genome_fn, verbose = verbose)
 
-    def get_gene(chroms = None, receptive_field=0, max_len = 10000):
+    def get_gene(chroms = None, receptive_field=0, min_len = 0, max_len = 10000):
         for gene,chrom_strand in genes.items():
             if chroms: 
                 if not chrom_strand.chrom in chroms: 
@@ -130,43 +198,58 @@ def get_generator(genome_fn, gtf_fn, tpm_fn=None, to_one_hot = True, verbose = F
             #assert(end_correct > .5)
             #print("Canonical start %f end %f (n=%s) strand %s " % (start_correct, end_correct, len(start_di), chrom_strand.strand))
 
-            one_hot = utils.one_hot(seq) if to_one_hot else seq
+            one_hot_enc = one_hot.one_hot(seq) if to_one_hot else seq # one is length x 4
             #one_hot = np.tile(utils.one_hot(seq), (is_exon.shape[0],1,1))
-            is_exon = is_exon[:,:,np.newaxis]
+            is_exon = is_exon[:,:,np.newaxis] # num_transcripts x length x 1
             #sample_weights = np.random.rand(is_exon.shape[0])
             # sample_weights = np.random.rand(is_exon.shape[0],is_exon.shape[1]) # requires sample_weight_mode="temporal" in model.compile
             #yield(((is_exon, one_hot), is_exon, sample_weights))
             #yield(((is_exon, one_hot), is_exon, weights)
-            yield(is_exon, one_hot, weights)
+            if min_len: 
+                T = is_exon.shape[1]
+                if T < min_len: 
+                    pad = min_len - T 
+                    is_exon = np.pad(
+                        is_exon, 
+                        ( (0,0), (0,pad), (0,0) )) 
+                    
+                    one_hot_enc = np.pad(
+                        one_hot_enc, 
+                        ( (0,pad), (0,0) ))
+            
+            yield(is_exon, one_hot_enc, weights)
             
     return(get_gene)
 
-def collate_helper(x, device = "cpu"): 
+def collate_helper(x, min_len = 0, device = "cpu"): 
     if isinstance(x[0], (int, np.int32, np.int64)):
         return torch.LongTensor(x).to(device)
     elif isinstance(x[0], (float, np.float32, np.float64)):
         return torch.FloatTensor(x).to(device)
     elif isinstance(x[0], (np.ndarray, collections.abc.Sequence)):
         x = [ torch.tensor(g) for g in x ]
-        padding_value = torch.nan if (x[0].dtype==torch.float) else 0.
-        padded_seq = torch.nn.utils.rnn.pad_sequence(x, batch_first = True, padding_value = padding_value).to(device)
+        padded_seq = torch.nn.utils.rnn.pad_sequence(x, batch_first = True, padding_value = 0.).to(device)
+        T = padded_seq.shape[1]
+        if T < min_len: 
+            pad = (0, 0, 0, min_len - T)  # (pad_left, pad_right, pad_top, pad_bottom)
+            padded_seq = F.pad(padded_seq, pad)
         lengths = torch.tensor([ len(g) for g in x ])
         return (padded_seq, lengths)
     else: 
         raise ValueError(f"Don't know how to collate {type(x[0])}")
 
-def custom_collate(batch, device = "cpu"):
-    return [ collate_helper(g, device = device) for g in zip(*batch) ]
-
+def custom_collate(batch, min_len = 0, device = "cpu"):
+    return [ collate_helper(g, min_len = min_len, device = device) for g in zip(*batch) ]
 
 class TranscriptDataset(torch.utils.data.IterableDataset):
 
-    def __init__(self, get_gene, chroms, receptive_field, max_len):
+    def __init__(self, get_gene, chroms, receptive_field, max_len, min_len = 0):
         super().__init__()
         
         self.get_gene = get_gene
         self.chroms = chroms
         self.receptive_field = receptive_field
+        self.min_len = min_len
         self.max_len = max_len
     
         chars = "ACGT"
@@ -178,7 +261,7 @@ class TranscriptDataset(torch.utils.data.IterableDataset):
 
     def __iter__(self):
         
-        for (is_exon, seq, weights) in self.get_gene(self.chroms, self.receptive_field, max_len = self.max_len): 
+        for (is_exon, seq, weights) in self.get_gene(self.chroms, self.receptive_field, min_len = self.min_len, max_len = self.max_len): 
             if weights.sum() == 0: continue
             to_keep = np.where(weights)[0]
             is_exon = is_exon[to_keep,:,:]
@@ -191,23 +274,27 @@ class TranscriptDataset(torch.utils.data.IterableDataset):
     
             seq_enc = seq if isinstance(seq, np.ndarray) else self.encode(seq)
 
-            yield is_exon, seq_enc, weights
+            one_hot_masked = seq_enc.copy()
+            seq_mask = get_mask_np_efficient(one_hot_masked)
 
-def get_dataloader(get_gene, chroms, receptive_field = 0, batch_size = 10, max_len = 30000, device = "cpu", num_workers = 0 ): 
+            yield is_exon, seq_enc, one_hot_masked, seq_mask, weights
 
-    collate_fn = partial( custom_collate, device = device)
+def get_dataloader(get_gene, chroms, receptive_field = 0, batch_size = 10, min_len = 0, max_len = 30000, device = "cpu", num_workers = 0 ): 
+
+    collate_fn = partial( custom_collate, min_len = min_len, device = device)
     
     dataset = TranscriptDataset(
         get_gene, 
         chroms,
         receptive_field, 
+        min_len = min_len,
         max_len = max_len
     )
 
     return torch.utils.data.DataLoader(
         dataset, 
         collate_fn = collate_fn,
-        batch_size=batch_size, 
+        batch_size = batch_size, 
         num_workers = num_workers
     )
 
