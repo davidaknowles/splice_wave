@@ -3,10 +3,10 @@
 import numpy as np
 np.get_include() # do we need this on colab?
 cimport cython
+#cimport numpy as np
 cimport numpy as np
 
 cdef dict bases={ 'A':<int>0, 'C':<int>1, 'G':<int>2, 'T':<int>3 }
-
 
 @cython.boundscheck(False)
 def one_hot_transpose( str string ):

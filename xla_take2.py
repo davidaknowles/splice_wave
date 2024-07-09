@@ -18,6 +18,7 @@ import torch.nn.functional as F
 import transcript_data
 import spliceAI
 import numpy as np
+import pandas as pd
 import os
 import tcn
 
@@ -46,6 +47,7 @@ class TrainXLADDP():
         batch_size = 20, 
         data_parallel = False, 
         num_workers = 0,
+        down_sample_ratio = 1.,
         sequence_len = 10000
     ):
     
@@ -57,7 +59,9 @@ class TrainXLADDP():
         get_gene = transcript_data.get_generator(
             os.path.expanduser("hg38.fa.gz"), 
             "gencode.v24.annotation.gtf.gz",
-            "ENCFF191YXW.tsv.gz") # neural cell polyA RNA-seq
+            "ENCFF191YXW.tsv.gz",
+            down_sample_ratio = down_sample_ratio
+        ) # neural cell polyA RNA-seq
         
         self.model = spliceAI.SpliceAI_10k(
             in_channels = 5, 
@@ -101,15 +105,16 @@ class TrainXLADDP():
         return not str(self.device) == "cpu" # TODO: handle CUDA
     
     def _train_update(self, step, loss, tracker, epoch):
-        print(f'epoch: {epoch}, step: {step}, loss: {loss}, rate: {tracker.rate()}')
+        print(f'epoch: {epoch}, step: {step}, loss: {loss}, rate: {tracker.rate()} count: {tracker._count}')
     
     def train_loop_fn(self, train, epoch):
 
         rf = self.model.receptive_field
 
-        total_loss = torch.tensor(0., device = self.device) 
+        total_loss = torch.tensor(0., device = self.device)
+        total_count = torch.tensor(0., device = self.device, dtype = torch.long)
         
-        tracker = xm.RateTracker() if self.xla else CPURateTracker()
+        tracker = xm.RateTracker() # if self.xla else CPURateTracker()
         if train: 
             self.model.train()
 
@@ -148,11 +153,14 @@ class TrainXLADDP():
 
             if train: 
                 loss.backward()
+            
             xm.optimizer_step(self.optimizer) if self.data_parallel else self.optimizer.step()
             #if self.xla and not self.data_parallel: 
             #   xm.mark_step()
 
             total_loss += loss
+            total_count += torch.tensor(self.batch_size, device = self.device)
+            
             tracker.add(self.batch_size)
 
             if step_i % 10 == 0:
@@ -161,22 +169,36 @@ class TrainXLADDP():
                 else: 
                     self._train_update(step_i, loss, tracker, epoch)
 
-        total_loss = xm.all_reduce(xm.REDUCE_SUM, total_loss).item()
-        return total_loss
+        if self.xla: 
+            total_loss = xm.all_reduce(xm.REDUCE_SUM, total_loss).item()
+            total_count = xm.all_reduce(xm.REDUCE_SUM, total_count).item()
+        return total_loss, total_count
     
     def print(self, *args, **kwargs): 
         xm.master_print(*args, **kwargs) if self.xla else print(*args, **kwargs)
     
     def train(self):
-        
-        for epoch in range(10):
-            xm.set_rng_state(epoch, device = self.device)
-            loss = self.train_loop_fn(True, epoch)
 
-            xm.set_rng_state(42, device = self.device)
-            test_loss = self.train_loop_fn(False, epoch)
-            self.print('Epoch {} train loss {} test loss {} end {}'.format(epoch, loss, test_loss, time.strftime('%l:%M%p %Z on %b %d, %Y')))
+        train_losses = []
+        test_losses = []
         
+        for epoch in range(50):
+            if self.xla: 
+                xm.set_rng_state(epoch, device = self.device)
+            loss, total_count = self.train_loop_fn(True, epoch)
+            train_losses.append(loss)
+
+            if self.xla: 
+                xm.set_rng_state(42, device = self.device)
+            #test_loss = self.train_loop_fn(False, epoch)
+            test_loss = 0.
+            test_losses.append(test_loss)
+            
+            self.print('Epoch {} train loss {} count {} test loss {} end {}'.format(epoch, loss, total_count, test_loss, time.strftime('%l:%M%p %Z on %b %d, %Y')))
+
+            pd.DataFrame({
+                "train_loss" : train_losses, 
+                "test_loss" : test_losses}).to_csv("progress.tsv", sep = "\t", index = False)
         if self.xla: 
             xm.wait_device_ops()
         
@@ -190,16 +212,15 @@ if __name__ == '__main__':
     if False: 
         flags = { 
             "use_xla" : False,
-            "batch_size" : 2, 
-            "data_parallel" : False,
-            "num_workers" : 0
+            "batch_size" : 10, 
+            "data_parallel" : False
         } 
-    else:     
+    else:
         flags = { 
             "use_xla" : True,
-            "batch_size" : 50, 
-            "data_parallel" : False,
-            "num_workers" : 0
+            "batch_size" : 100, 
+            "data_parallel" : True,
+            "down_sample_ratio" : 0.25
         } 
 
     print(flags)

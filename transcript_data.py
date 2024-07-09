@@ -138,7 +138,14 @@ def get_tpms(fn): # "ENCFF191YXW.tsv.gz"
 
 # TODO: mask beyond transcript boundaries (unless want to do altAPA/TSS)
 # Can do this using 2D sample weights
-def get_generator(genome_fn, gtf_fn, tpm_fn=None, to_one_hot = True, verbose = False):
+def get_generator(
+    genome_fn, 
+    gtf_fn, 
+    tpm_fn=None, 
+    to_one_hot = True, 
+    verbose = False,
+    down_sample_ratio = 1.
+):
     
     tpms = get_tpms(tpm_fn) if tpm_fn else {}
 
@@ -148,6 +155,9 @@ def get_generator(genome_fn, gtf_fn, tpm_fn=None, to_one_hot = True, verbose = F
 
     def get_gene(chroms = None, receptive_field=0, min_len = 0, max_len = 10000):
         for gene,chrom_strand in genes.items():
+            if down_sample_ratio != 1.: 
+                if np.random.rand() > down_sample_ratio: 
+                    continue
             if chroms: 
                 if not chrom_strand.chrom in chroms: 
                     continue
