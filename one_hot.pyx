@@ -17,7 +17,6 @@ def one_hot_transpose( str string ):
             res[ bases[ string[j] ], j ]=float(1.0)
     return(res)
 
-
 @cython.boundscheck(False)
 def one_hot( str string ):
     cdef np.ndarray[np.float32_t, ndim=2] res = np.zeros( (len(string),4), dtype=np.float32 )

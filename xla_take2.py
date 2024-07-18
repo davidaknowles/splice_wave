@@ -10,6 +10,7 @@ import itertools
 from pathlib import Path
 
 import torch
+
 import torchvision
 import torch.optim as optim
 import torch.nn as nn
@@ -24,21 +25,6 @@ import tcn
 
 import time
 
-class CPURateTracker:
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        self.start_time = time.time()
-        self.count = 0
-
-    def add(self, n=1):
-        self.count += n
-
-    def rate(self):
-        elapsed_time = time.time() - self.start_time
-        return self.count / elapsed_time if elapsed_time > 0 else 0.0
-
 class TrainXLADDP():
     
     def __init__(
@@ -46,9 +32,10 @@ class TrainXLADDP():
         use_xla = False, 
         batch_size = 20, 
         data_parallel = False, 
-        num_workers = 0,
         down_sample_ratio = 1.,
-        sequence_len = 10000
+        sequence_len = 10000,
+        num_workers = 0,
+        repeats = 1
     ):
     
         self.device = xm.xla_device() if use_xla else "cpu" 
@@ -60,7 +47,9 @@ class TrainXLADDP():
             os.path.expanduser("hg38.fa.gz"), 
             "gencode.v24.annotation.gtf.gz",
             "ENCFF191YXW.tsv.gz",
-            down_sample_ratio = down_sample_ratio
+            down_sample_ratio = down_sample_ratio,
+            num_devices = xr.world_size(), 
+            device_id = xm.get_ordinal()
         ) # neural cell polyA RNA-seq
         
         self.model = spliceAI.SpliceAI_10k(
@@ -81,7 +70,9 @@ class TrainXLADDP():
             num_workers = num_workers, 
             device = "cpu", # we pass cpu as the device since MpDeviceLoader handles the transfer to the TPU
             min_len = self.sequence_len, 
-            max_len = self.sequence_len )
+            max_len = self.sequence_len,
+            repeats = repeats
+        )
         self.train_device_loader = pl.MpDeviceLoader(train_dataloader, self.device) if self.xla else train_dataloader
 
         test_dataloader = transcript_data.get_dataloader(
@@ -105,14 +96,14 @@ class TrainXLADDP():
         return not str(self.device) == "cpu" # TODO: handle CUDA
     
     def _train_update(self, step, loss, tracker, epoch):
-        print(f'epoch: {epoch}, step: {step}, loss: {loss}, rate: {tracker.rate()} count: {tracker._count}')
+        print(f'device {xm.get_ordinal()} epoch: {epoch}, step: {step}, loss: {loss}, rate: {tracker.rate()}')
     
     def train_loop_fn(self, train, epoch):
 
         rf = self.model.receptive_field
 
         total_loss = torch.tensor(0., device = self.device)
-        total_count = torch.tensor(0., device = self.device, dtype = torch.long)
+        total_count = 0 # torch.tensor(0., device = self.device, dtype = torch.long)
         
         tracker = xm.RateTracker() # if self.xla else CPURateTracker()
         if train: 
@@ -125,8 +116,8 @@ class TrainXLADDP():
             #torch.save([is_exon, one_hot], cache_dir / f"{step_i}.pt")
 
             # maybe not needed now? 
-            is_exon = is_exon.nan_to_num() # length 10000
-            one_hot = one_hot.nan_to_num() # length 20000
+            #is_exon = is_exon.nan_to_num() # length 10000
+            #one_hot = one_hot.nan_to_num() # length 20000
 
             #if train: 
             self.optimizer.zero_grad()
@@ -159,19 +150,38 @@ class TrainXLADDP():
             #   xm.mark_step()
 
             total_loss += loss
-            total_count += torch.tensor(self.batch_size, device = self.device)
+            total_count += self.batch_size # torch.tensor(self.batch_size, device = self.device)
             
             tracker.add(self.batch_size)
 
-            if step_i % 10 == 0:
+            if step_i % 30 == 0:
                 if self.xla:     
                     xm.add_step_closure(self._train_update, args=(step_i, loss, tracker, epoch))
                 else: 
                     self._train_update(step_i, loss, tracker, epoch)
+        
+        print(f"device {xm.get_ordinal()} finished")
+        
+        if self.xla:     
+            xm.add_step_closure(self._train_update, args=(step_i, loss, tracker, epoch))
+        else: 
+            self._train_update(step_i, loss, tracker, epoch)
 
+        print(f"device {xm.get_ordinal()} messaged")
+        
         if self.xla: 
-            total_loss = xm.all_reduce(xm.REDUCE_SUM, total_loss).item()
-            total_count = xm.all_reduce(xm.REDUCE_SUM, total_count).item()
+            
+            total_loss = xm.all_reduce(xm.REDUCE_SUM, total_loss)
+            print(f"device {xm.get_ordinal()} reduce done")
+
+            xm.mark_step()
+            #torch_xla.sync()
+            print(f"device {xm.get_ordinal()} markstep done")
+            
+            total_loss = total_loss.item()
+            print(f"device {xm.get_ordinal()} item() done")
+        
+        print(f"device {xm.get_ordinal()} results gathered")
         return total_loss, total_count
     
     def print(self, *args, **kwargs): 
@@ -184,7 +194,9 @@ class TrainXLADDP():
         
         for epoch in range(50):
             if self.xla: 
+                #xm.set_rng_state(epoch, device = self.device)
                 xm.set_rng_state(epoch, device = self.device)
+                #np.random.seed( time.time_ns() % (2**32) )
             loss, total_count = self.train_loop_fn(True, epoch)
             train_losses.append(loss)
 
@@ -207,12 +219,38 @@ def _mp_fn(index, flags):
     xla_ddp = TrainXLADDP(**flags)
     xla_ddp.train()
 
+class MyDataset(torch.utils.data.IterableDataset):
+
+    def __init__(self):
+        super().__init__()
+        self.N = 100
+        self.data = torch.rand(self.N, 30) 
+
+    def __iter__(self): 
+        for i in range(self.N): 
+            if i % xr.world_size() == xm.get_ordinal(): 
+                yield self.data[i]
+
+def _mp_fn_(index, flags): 
+
+    device = xm.xla_device()
+    dataset = MyDataset()
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size = 10)
+    device_loader = pl.MpDeviceLoader(dataloader, device)
+
+    for epoch in range(3): 
+        mysum = torch.tensor(0., device = device) 
+        for batch in device_loader: 
+            mysum += batch.sum()
+        sumsum = xm.all_reduce(xm.REDUCE_SUM, mysum).item()
+        print(epoch, sumsum)
+
 if __name__ == '__main__':
 
     if False: 
         flags = { 
             "use_xla" : False,
-            "batch_size" : 10, 
+            "batch_size" : 100, 
             "data_parallel" : False
         } 
     else:
@@ -220,7 +258,8 @@ if __name__ == '__main__':
             "use_xla" : True,
             "batch_size" : 100, 
             "data_parallel" : True,
-            "down_sample_ratio" : 0.25
+            "down_sample_ratio" : 1.,
+            "repeats" : 1
         } 
 
     print(flags)
@@ -230,7 +269,9 @@ if __name__ == '__main__':
     else: 
         _mp_fn(0, flags)
 
-if False: 
+
+
+if False:
     cache_dir = Path("data_cache")
     
     is_exon_list = []

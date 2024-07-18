@@ -12,6 +12,19 @@ import os
 
 import gtf_loader
 
+import itertools
+
+def repeat_iterator(iterator, times):
+    # Duplicate the iterator
+    iterators = itertools.tee(iterator, times)
+    
+    def generator():
+        for it in iterators:
+            yield from it
+    
+    return generator()
+
+
 def get_mask(
     B, 
     T, 
@@ -144,8 +157,12 @@ def get_generator(
     tpm_fn=None, 
     to_one_hot = True, 
     verbose = False,
-    down_sample_ratio = 1.
+    down_sample_ratio = 1.,
+    num_devices = 0, 
+    device_id = 0
 ):
+
+    print(f"get_generator num_devices {num_devices} device_id {device_id}") 
     
     tpms = get_tpms(tpm_fn) if tpm_fn else {}
 
@@ -154,10 +171,16 @@ def get_generator(
     genome = utils.get_fasta(genome_fn, verbose = verbose)
 
     def get_gene(chroms = None, receptive_field=0, min_len = 0, max_len = 10000):
-        for gene,chrom_strand in genes.items():
+
+        for yield_count,(gene,chrom_strand) in enumerate(genes.items()):
+            
             if down_sample_ratio != 1.: 
                 if np.random.rand() > down_sample_ratio: 
                     continue
+            if num_devices > 0: 
+                if yield_count % num_devices != device_id:
+                    continue
+            
             if chroms: 
                 if not chrom_strand.chrom in chroms: 
                     continue
@@ -253,7 +276,7 @@ def custom_collate(batch, min_len = 0, device = "cpu"):
 
 class TranscriptDataset(torch.utils.data.IterableDataset):
 
-    def __init__(self, get_gene, chroms, receptive_field, max_len, min_len = 0):
+    def __init__(self, get_gene, chroms, receptive_field, max_len, min_len = 0, repeats = 1):
         super().__init__()
         
         self.get_gene = get_gene
@@ -261,6 +284,8 @@ class TranscriptDataset(torch.utils.data.IterableDataset):
         self.receptive_field = receptive_field
         self.min_len = min_len
         self.max_len = max_len
+
+        self.repeats = repeats
     
         chars = "ACGT"
         stoi = defaultdict(lambda: 4, {ch:i for i,ch in enumerate(chars)})
@@ -270,8 +295,11 @@ class TranscriptDataset(torch.utils.data.IterableDataset):
         self.decode = lambda xx: ''.join([itos[x] for x in xx])
 
     def __iter__(self):
+
+        my_it = self.get_gene(self.chroms, self.receptive_field, min_len = self.min_len, max_len = self.max_len)
+        repeated_it = repeat_iterator(my_it, self.repeats)
         
-        for (is_exon, seq, weights) in self.get_gene(self.chroms, self.receptive_field, min_len = self.min_len, max_len = self.max_len): 
+        for (is_exon, seq, weights) in repeated_it: 
             if weights.sum() == 0: continue
             to_keep = np.where(weights)[0]
             is_exon = is_exon[to_keep,:,:]
@@ -289,7 +317,16 @@ class TranscriptDataset(torch.utils.data.IterableDataset):
 
             yield is_exon, seq_enc, one_hot_masked, seq_mask, weights
 
-def get_dataloader(get_gene, chroms, receptive_field = 0, batch_size = 10, min_len = 0, max_len = 30000, device = "cpu", num_workers = 0 ): 
+def get_dataloader(
+    get_gene, 
+    chroms, 
+    receptive_field = 0, 
+    batch_size = 10, 
+    min_len = 0, 
+    max_len = 30000, 
+    device = "cpu", 
+    num_workers = 0,
+    repeats = 1): 
 
     collate_fn = partial( custom_collate, min_len = min_len, device = device)
     
@@ -298,7 +335,8 @@ def get_dataloader(get_gene, chroms, receptive_field = 0, batch_size = 10, min_l
         chroms,
         receptive_field, 
         min_len = min_len,
-        max_len = max_len
+        max_len = max_len,
+        repeats = repeats
     )
 
     return torch.utils.data.DataLoader(
