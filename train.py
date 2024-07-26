@@ -1,139 +1,248 @@
-import torch
-import transcript_data
-import tcn
+import torch_xla
+from torch_xla import runtime as xr
+import torch_xla.core.xla_model as xm
+import torch_xla.distributed.parallel_loader as pl
+import torch_xla.distributed.xla_multiprocessing as xmp
+
 import time
+import itertools
+
+from pathlib import Path
+
+import torch
+
+import torchvision
+import torch.optim as optim
+import torch.nn as nn
 import torch.nn.functional as F
+
+import transcript_data
+import spliceAI
 import numpy as np
+import pandas as pd
+import os
+import tcn
 
-try:
-    import torch_xla.core.xla_model as xm
-    import torch_xla.debug.metrics as met
-    XLA_AVAILABLE = True
-except ImportError as e:
-    print(f"XLA not available, will use GPU or CPU")
-    XLA_AVAILABLE = False
+import time
 
-# will probably want a different version for Mamba: everything handled so differently
-def one_epoch(model, dataloader, optimizer = None, device = "cpu", pred_meta_task = False, eval_LM = False, max_batches = None):
-    rf = model.receptive_field
+class TrainXLADDP():
     
-    train = not optimizer is None
-    start_time = time.time()
-    last_log_time = time.time()
-    torch.set_grad_enabled(train)
-    model.train() if train else model.eval()
-
-    metrics = []
+    def __init__(
+        self,
+        use_xla = False,
+        batch_size = 20,
+        data_parallel = False,
+        down_sample_ratio = 1.,
+        sequence_len = 10000,
+        num_workers = 0,
+        repeats = 1, 
+        mamba = False,
+        in_channels = 5,
+        out_channels = 4
+    ):
     
-    batch_counter = 0
-    for ((is_exon, lengths_), (one_hot, lengths), weights) in dataloader: 
-
-        metrics.append({})
+        self.device = xm.xla_device() if use_xla else "cpu" 
+        self.batch_size = batch_size
+        self.data_parallel = data_parallel
+        self.sequence_len = sequence_len
         
-        #met.mark_step()
+        get_gene = transcript_data.get_generator(
+            os.path.expanduser("hg38.fa.gz"), 
+            "gencode.v24.annotation.gtf.gz",
+            "ENCFF191YXW.tsv.gz",
+            down_sample_ratio = down_sample_ratio,
+            num_devices = xr.world_size(), 
+            device_id = xm.get_ordinal()
+        ) # neural cell polyA RNA-seq
 
+        if mamba: 
+            self.model = tcn.MambaOneHotNet(
+                in_channels = in_channels, 
+                out_channels = out_channels, 
+                n_embed = 64, 
+                n_layers = 8, 
+                receptive_field = 5000, 
+                bidir = True
+            ).to(self.device)
+        else: 
+            self.model = spliceAI.SpliceAI_10k(
+                in_channels = in_channels, 
+                out_channels = out_channels, 
+                n_embed = 64
+            ).to(self.device)
+
+        train_chroms = ["chr%i" % i for i in range(2,23)] + ["chrX"]
+        test_chroms = ["chr1"]
+        
+        # batch_size = 10. Cadaceus done 2^20 ~ 1M tokens per batch. So og is 10x smaller
+        train_dataloader = transcript_data.get_dataloader(
+            get_gene, 
+            train_chroms, 
+            receptive_field = 5000, 
+            batch_size = self.batch_size, 
+            num_workers = num_workers, 
+            device = "cpu", # we pass cpu as the device since MpDeviceLoader handles the transfer to the TPU
+            min_len = self.sequence_len, 
+            max_len = self.sequence_len,
+            repeats = repeats
+        )
+        self.train_device_loader = pl.MpDeviceLoader(train_dataloader, self.device) if self.xla else train_dataloader
+
+        test_dataloader = transcript_data.get_dataloader(
+            get_gene, 
+            test_chroms, 
+            receptive_field = 5000, 
+            batch_size = self.batch_size, 
+            num_workers = num_workers, 
+            device = "cpu", 
+            min_len = self.sequence_len, 
+            max_len = self.sequence_len )
+        self.test_device_loader = pl.MpDeviceLoader(test_dataloader, self.device) if self.xla else test_dataloader
+        # could use bigger batch here but want to be consistent with mamba
+        #test_dataloader = transcript_data.get_dataloader(get_gene, test_chroms, receptive_field = 5000, batch_size = 1, device = "cpu", max_len = 30000 )
+        #self.test_device_loader = pl.MpDeviceLoader(test_dataloader, self.device)
+        
+        self.optimizer = torch.optim.Adam(self.model.parameters())
+
+    @property
+    def xla(self): 
+        return not str(self.device) == "cpu" # TODO: handle CUDA
+    
+    def _train_update(self, step, loss, tracker, epoch):
+        print(f'device {xm.get_ordinal()} epoch: {epoch}, step: {step}, loss: {loss}, rate: {tracker.rate()}')
+    
+    def train_loop_fn(self, train, epoch):
+
+        rf = self.model.receptive_field
+
+        total_loss = torch.tensor(0., device = self.device)
+        total_count = 0 # torch.tensor(0., device = self.device, dtype = torch.long)
+        
+        tracker = xm.RateTracker() # if self.xla else CPURateTracker()
         if train: 
-            optimizer.zero_grad()
+            self.model.train()
 
-        # convert to B x C x T (CNN) from B x T x C (RNN/transformer)
-        # these are generated by rnn.pad_sequence internally
-        one_hot = one_hot.permute(0, 2, 1) 
-        is_exon = is_exon.permute(0, 2, 1)
-    
-        mask = is_exon.isnan() # record what is truly missing in is_exon (because of short genes)
-    
-        B,C,T = is_exon.shape # batch, channels, length
+        for step_i, dat in enumerate(self.train_device_loader if train else self.test_device_loader): 
 
-        # TODO: handle multiple meta channels (need to think carefully about joint masking)
-        meta = torch.zeros( B, 2, T + rf * 2, device = "cpu")  # one hot, zero for missing
-        meta[:, 0, rf:-rf] = is_exon[:,0,:]
-        meta[:, 1, rf:-rf] = (1.-is_exon[:,0,:])
-        
-        mytime = time.time()
+            # we don't actually need lengths so could stop returning? 
+            (is_exon, _), (one_hot, lengths), (one_hot_masked, _), (seq_mask, _), weights = dat
+            #torch.save([is_exon, one_hot], cache_dir / f"{step_i}.pt")
 
-        meta_mask = transcript_data.get_mask(B, T, meta, min_span = 30, max_span = 300, mask_same = True) 
-    
-        one_hot_masked = one_hot.clone().detach().cpu()
-        seq_mask = transcript_data.get_mask(B, T, one_hot_masked, min_span = 1, max_span = 10, mask_same = False)
-        
-        meta = meta.to(device)
-        meta_mask = meta_mask.to(device)
-        one_hot_masked = one_hot_masked.to(device)
-        seq_mask = seq_mask.to(device)
-        print("Mask time", time.time() - mytime)
-    
-        input = torch.concat( (meta, one_hot_masked), 1) # shouldn't this be meta masked? 
-        
-        output = model(input.nan_to_num()) # spliceAI uses conv which want B x C x T
-    
-        meta_logits = output[:,0,:]
-        
-        eval_mask = meta_mask & ~mask[:,0,:] # masked and not actually missing
-        is_exon_masked = is_exon[:,0,:][ eval_mask ]
-        output_masked = meta_logits[ eval_mask ]
-        meta_loss = F.binary_cross_entropy_with_logits(output_masked, is_exon_masked)
-        metrics[-1]["meta_acc"] = (is_exon_masked > 0.5).eq( output_masked > 0. ).float().mean().item()
-        metrics[-1]["meta_loss"] = meta_loss.item()
-        
-        seq_loss = tcn.my_bce_loss(seq_mask, mask, output[:,1:,:], one_hot[:, :, rf:-rf]) 
-        metrics[-1]["seq_loss"] = meta_loss.item()
-    
-        loss = meta_loss + seq_loss
-        assert(not loss.isnan().item())
-
-        if pred_meta_task: 
-            meta = torch.zeros( B, 2, T + rf * 2, device = device)
-            input = torch.concat( (meta, one_hot), 1 ) # pred with full sequence but no is_exon info
-            output = model(input.nan_to_num()) 
-            is_exon_masked = is_exon[:,0,:][ ~mask[:,0,:] ]
-            output_masked = output[:,0,:][ ~mask[:,0,:] ]
-            loss += F.binary_cross_entropy_with_logits(output_masked, is_exon_masked)
-            metrics[-1]["pred_meta_acc"] = (is_exon_masked > 0.5).eq( output_masked > 0. ).float().mean().item()
-            metrics[-1]["baseline_acc"] = (is_exon_masked <= 0.5).float().mean().item()
-        
-        # TODO: could also add an "MLM" task where meta is not masked at all, but my gut is this would be
-        # highly redundant with the mask MLM task where both are partially masked
-    
-        if eval_LM: 
-            # evaluate seq LM perf without context
-            meta = torch.zeros( B, 2, T + rf * 2, device = device)
-            one_hot_masked = one_hot.clone().detach()
-            seq_mask = transcript_data.get_mask(B, T, one_hot_masked, cheat_rate = 0., corrupt_rate = 0., min_span = 1, max_span = 10, mask_same = False)
-            input = torch.concat( (meta, one_hot_masked), 1)
-            output = model(input.nan_to_num()) 
-            seq_loss = tcn.my_bce_loss(seq_mask, mask, output[:,1:,:], one_hot[:, :, rf:-rf]) 
-            metrics[-1]["no_context"] = seq_loss.item()
-        
-            # evaluate seq LM perf with context
-            meta[:, 0, rf:-rf] = is_exon[:,0,:]
-            meta[:, 1, rf:-rf] = (1.-is_exon[:,0,:])
-        
-            input = torch.concat( (meta, one_hot_masked), 1)
-            output = model(input.nan_to_num()) 
-        
-            seq_loss = tcn.my_bce_loss(seq_mask, mask, output[:,1:,:], one_hot[:, :, rf:-rf]) 
-            metrics[-1]["with_context"] = seq_loss.item()
-
-        if train:
-            loss.backward()
-            optimizer.step()
+            if train: 
+                self.optimizer.zero_grad()
             
-        metrics[-1][ "loss" ] = loss.item()
-        metrics[-1][ "time" ] = time.time() - start_time
+            # convert to B x C x T (CNN) from B x T x C (RNN/transformer)
+            # these are generated by rnn.pad_sequence internally
+            one_hot = one_hot.permute(0, 2, 1) 
+            is_exon = is_exon.permute(0, 2, 1)
+            one_hot_masked = one_hot_masked.permute(0, 2, 1)
+            # seq_mask = seq_mask.permute(0, 2, 1) # B x T so don't need to do this
+            seq_mask_ = seq_mask[:, None, rf:-rf].float() # .expand(-1, 4, -1)
+            
+            meta = F.pad(is_exon, (rf,rf)) # just pad seq dimension
 
-        if XLA_AVAILABLE: 
+            x = torch.concat( (meta, one_hot_masked), 1)
+            
+            output = self.model(x) # spliceAI uses conv which needs B x C x T
+
+            one_hot_sub = one_hot[:, :, rf:-rf]
+            
+            seq_out_norm = output - output.logsumexp(1, keepdims = True)
+            loss = - (seq_mask_ * one_hot_sub * seq_out_norm).sum() / (seq_mask_.sum() + 1e-8) 
+
+            if train: 
+                loss.backward()
+            
+            xm.optimizer_step(self.optimizer) if self.data_parallel else self.optimizer.step()
+            if self.xla and not self.data_parallel: 
+                xm.mark_step()
+
+            total_loss += loss
+            total_count += self.batch_size # torch.tensor(self.batch_size, device = self.device)
+            
+            tracker.add(self.batch_size)
+
+            if step_i % 30 == 0:
+                if self.xla:     
+                    xm.add_step_closure(self._train_update, args=(step_i, loss, tracker, epoch))
+                else: 
+                    self._train_update(step_i, loss, tracker, epoch)
+        
+        if self.xla:     
+            print(f"device {xm.get_ordinal()} finished")
+            xm.add_step_closure(self._train_update, args=(step_i, loss, tracker, epoch))
+        else: 
+            self._train_update(step_i, loss, tracker, epoch)
+
+        print(f"device {xm.get_ordinal()} messaged")
+        
+        if self.xla: 
+            
+            total_loss = xm.all_reduce(xm.REDUCE_SUM, total_loss)
+            print(f"device {xm.get_ordinal()} reduce done")
+
             xm.mark_step()
-            #met.mark_step()  # End marker
-            print(met.metrics_report()) 
-
-        if (time.time() - last_log_time) > 60.0: 
-            print("%i" % batch_counter, end = '\r')
-            last_log_time = time.time()
-
-        batch_counter += 1
-
-        if (not max_batches is None) and (batch_counter >= max_batches): break
+            #torch_xla.sync()
+            print(f"device {xm.get_ordinal()} markstep done")
+            
+            total_loss = total_loss.item()
+            #total_loss = 0.
+            print(f"device {xm.get_ordinal()} item() done")
+        
+        print(f"device {xm.get_ordinal()} results gathered")
+        return total_loss, total_count
     
-    keys = list(metrics[0].keys())
-    prefix = "train_" if train else "test_"
-    return {prefix+key: np.mean([d[key] for d in metrics]) for key in keys}
+    def print(self, *args, **kwargs): 
+        xm.master_print(*args, **kwargs) if self.xla else print(*args, **kwargs)
+    
+    def train(self):
+
+        train_losses = []
+        test_losses = []
+        
+        for epoch in range(50):
+            if self.xla: 
+                #xm.set_rng_state(epoch, device = self.device)
+                xm.set_rng_state(epoch, device = self.device)
+                #np.random.seed( time.time_ns() % (2**32) )
+            loss, total_count = self.train_loop_fn(True, epoch)
+            train_losses.append(loss)
+
+            if self.xla: 
+                xm.set_rng_state(42, device = self.device)
+            #test_loss = self.train_loop_fn(False, epoch)
+            test_loss = 0.
+            test_losses.append(test_loss)
+            
+            self.print('Epoch {} train loss {} count {} test loss {} end {}'.format(epoch, loss, total_count, test_loss, time.strftime('%l:%M%p %Z on %b %d, %Y')))
+
+            pd.DataFrame({
+                "train_loss" : train_losses, 
+                "test_loss" : test_losses}).to_csv("progress.tsv", sep = "\t", index = False)
+        if self.xla: 
+            xm.wait_device_ops()
+        
+def _mp_fn(index, flags):
+    # "cpu" # xm.xla_device() # == torch_xla.device()
+    xla_ddp = TrainXLADDP(**flags)
+    xla_ddp.train()
+
+
+if __name__ == '__main__':
+
+    flags = { 
+        "use_xla" : True,
+        "batch_size" : 100, 
+        "data_parallel" : True,
+        "down_sample_ratio" : 1.,
+        "repeats" : 1, 
+        "mamba" : False
+    } 
+
+    print(flags)
+    
+    if flags["data_parallel"]: 
+        xmp.spawn(_mp_fn, args=(flags,))
+    else: 
+        _mp_fn(0, flags)
+

@@ -1,6 +1,5 @@
 
 import utils
-import one_hot
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -13,6 +12,11 @@ import os
 import gtf_loader
 
 import itertools
+
+try: # import the cython version if possible (considerably faster) 
+    from one_hot import one_hot
+except ImportError as e: # otherwise use pure pyton
+    from utils import one_hot
 
 def repeat_iterator(iterator, times):
     # Duplicate the iterator
@@ -231,7 +235,7 @@ def get_generator(
             #assert(end_correct > .5)
             #print("Canonical start %f end %f (n=%s) strand %s " % (start_correct, end_correct, len(start_di), chrom_strand.strand))
 
-            one_hot_enc = one_hot.one_hot(seq) if to_one_hot else seq # one is length x 4
+            one_hot_enc = one_hot(seq) if to_one_hot else seq # one is length x 4
             #one_hot = np.tile(utils.one_hot(seq), (is_exon.shape[0],1,1))
             is_exon = is_exon[:,:,np.newaxis] # num_transcripts x length x 1
             #sample_weights = np.random.rand(is_exon.shape[0])
