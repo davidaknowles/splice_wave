@@ -1,8 +1,0 @@
-name: torch
-channels:
-  - pytorch
-dependencies:
-  - python=3.10
-  - pytorch
-  - cudatoolkit # may need to specify version for this?
-  - numpy
