@@ -11,7 +11,6 @@ from pathlib import Path
 
 import torch
 
-import torchvision
 import torch.optim as optim
 import torch.nn as nn
 import torch.nn.functional as F
@@ -19,7 +18,7 @@ import torch.nn.functional as F
 import transcript_data
 import spliceAI
 import numpy as np
-import pandas as pd
+
 import os
 import tcn
 
@@ -216,9 +215,6 @@ class TrainXLADDP():
             
             self.print('Epoch {} train loss {} count {} test loss {} end {}'.format(epoch, loss, total_count, test_loss, time.strftime('%l:%M%p %Z on %b %d, %Y')))
 
-            pd.DataFrame({
-                "train_loss" : train_losses, 
-                "test_loss" : test_losses}).to_csv("progress.tsv", sep = "\t", index = False)
         if self.xla: 
             xm.wait_device_ops()
         

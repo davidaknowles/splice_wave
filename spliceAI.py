@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
 
-from einops import rearrange
-
 class Residual(nn.Module):
     def __init__(self, fn):
         super().__init__()
@@ -52,7 +50,7 @@ class SpliceAI_10k(nn.Module):
         
         x = self.conv_last(x)
 
-        return x[:, :, self.receptive_field:-self.receptive_field ] # rearrange(x[..., 5000:5000 + 5000], 'b c l -> b l c')
+        return x[:, :, self.receptive_field:-self.receptive_field ]
 
 if __name__ == '__main__':
 

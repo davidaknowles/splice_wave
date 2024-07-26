@@ -4,6 +4,7 @@ from torch.nn.utils import weight_norm
 import torch.nn.functional as F
 import numpy as np
 import transcript_data
+
 try: 
     from mamba_ssm import Mamba
 except ImportError as e: 
