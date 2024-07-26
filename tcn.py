@@ -7,8 +7,19 @@ import transcript_data
 try: 
     from mamba_ssm import Mamba
 except ImportError as e: 
-    print("Warning mamba not available") 
+    print("Warning mamba_ssm not available, attempting to import mambapy") 
     
+    try: 
+        import mambapy.mamba
+    
+        class Mamba(mambapy.mamba.MambaBlock): 
+            def __init__(self, d_model, n_layers = 1, pscan = "heinsen", **kwargs): 
+                config = mambapy.mamba.MambaConfig(d_model, n_layers, pscan = pscan, **kwargs)
+                super().__init__(config)
+                
+    except ImportError as e: 
+        print("Also couldn't import mambapy")
+
 def my_bce_loss(seq_mask, mask, logits, one_hot):
     seq_eval_mask = seq_mask & ~mask[:,0,:] 
     seq_out = logits.permute(0, 2, 1)

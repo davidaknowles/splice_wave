@@ -28,14 +28,15 @@ import time
 class TrainXLADDP():
     
     def __init__(
-        self, 
-        use_xla = False, 
-        batch_size = 20, 
-        data_parallel = False, 
+        self,
+        use_xla = False,
+        batch_size = 20,
+        data_parallel = False,
         down_sample_ratio = 1.,
         sequence_len = 10000,
         num_workers = 0,
-        repeats = 1
+        repeats = 1, 
+        mamba = False
     ):
     
         self.device = xm.xla_device() if use_xla else "cpu" 
@@ -51,13 +52,26 @@ class TrainXLADDP():
             num_devices = xr.world_size(), 
             device_id = xm.get_ordinal()
         ) # neural cell polyA RNA-seq
-        
-        self.model = spliceAI.SpliceAI_10k(
-            in_channels = 5, 
-            out_channels = 4, 
-            n_embed = 64
-        ).to(self.device)
-        
+
+        in_channels = 5
+        out_channels = 4
+
+        if mamba: 
+            self.model = tcn.MambaOneHotNet(
+                in_channels = in_channels, 
+                out_channels = out_channels, 
+                n_embed = 64, 
+                n_layers = 8, 
+                receptive_field = 5000, 
+                bidir = True
+            ).to(self.device)
+        else: 
+            self.model = spliceAI.SpliceAI_10k(
+                in_channels = in_channels, 
+                out_channels = out_channels, 
+                n_embed = 64
+            ).to(self.device)
+
         train_chroms = ["chr%i" % i for i in range(2,23)] + ["chrX"]
         test_chroms = ["chr1"]
         
@@ -160,28 +174,30 @@ class TrainXLADDP():
                 else: 
                     self._train_update(step_i, loss, tracker, epoch)
         
-        print(f"device {xm.get_ordinal()} finished")
+        
         
         if self.xla:     
+            print(f"device {xm.get_ordinal()} finished")
             xm.add_step_closure(self._train_update, args=(step_i, loss, tracker, epoch))
         else: 
             self._train_update(step_i, loss, tracker, epoch)
 
-        print(f"device {xm.get_ordinal()} messaged")
+        if False: print(f"device {xm.get_ordinal()} messaged")
         
         if self.xla: 
             
             total_loss = xm.all_reduce(xm.REDUCE_SUM, total_loss)
-            print(f"device {xm.get_ordinal()} reduce done")
+            if False: print(f"device {xm.get_ordinal()} reduce done")
 
-            xm.mark_step()
+            #xm.mark_step()
             #torch_xla.sync()
-            print(f"device {xm.get_ordinal()} markstep done")
+            if False: print(f"device {xm.get_ordinal()} markstep done")
             
-            total_loss = total_loss.item()
-            print(f"device {xm.get_ordinal()} item() done")
+            #total_loss = total_loss.item()
+            total_loss = 0.
+            if False: print(f"device {xm.get_ordinal()} item() done")
         
-        print(f"device {xm.get_ordinal()} results gathered")
+        if False: print(f"device {xm.get_ordinal()} results gathered")
         return total_loss, total_count
     
     def print(self, *args, **kwargs): 
@@ -219,31 +235,6 @@ def _mp_fn(index, flags):
     xla_ddp = TrainXLADDP(**flags)
     xla_ddp.train()
 
-class MyDataset(torch.utils.data.IterableDataset):
-
-    def __init__(self):
-        super().__init__()
-        self.N = 100
-        self.data = torch.rand(self.N, 30) 
-
-    def __iter__(self): 
-        for i in range(self.N): 
-            if i % xr.world_size() == xm.get_ordinal(): 
-                yield self.data[i]
-
-def _mp_fn_(index, flags): 
-
-    device = xm.xla_device()
-    dataset = MyDataset()
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size = 10)
-    device_loader = pl.MpDeviceLoader(dataloader, device)
-
-    for epoch in range(3): 
-        mysum = torch.tensor(0., device = device) 
-        for batch in device_loader: 
-            mysum += batch.sum()
-        sumsum = xm.all_reduce(xm.REDUCE_SUM, mysum).item()
-        print(epoch, sumsum)
 
 if __name__ == '__main__':
 
@@ -251,15 +242,17 @@ if __name__ == '__main__':
         flags = { 
             "use_xla" : False,
             "batch_size" : 100, 
-            "data_parallel" : False
+            "data_parallel" : False,
+            "mamba" : True
         } 
     else:
         flags = { 
             "use_xla" : True,
-            "batch_size" : 100, 
+            "batch_size" : 1, 
             "data_parallel" : True,
             "down_sample_ratio" : 1.,
-            "repeats" : 1
+            "repeats" : 1, 
+            "mamba" : True
         } 
 
     print(flags)
@@ -292,6 +285,4 @@ if False:
     is_exon_comb = is_exon_comb.nan_to_num()
     one_hot_comb = one_hot_comb.nan_to_num()
     torch.save([is_exon_comb,one_hot_comb], "data_cache_clean.pt")
-
-
 
