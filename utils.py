@@ -1,5 +1,6 @@
 import numpy as np
 import gzip 
+import time
 
 nuc_arr = {'A':0,'C':1,'G':2,'T':3}
 
@@ -38,5 +39,48 @@ def fetch_sequence(dic, fasta_id, start, end, strand = "+"):
     seq =  dic[fasta_id][int(start):int(end)]
 
     return seq if strand=="+" else reverse_complement(seq)
+
+
+class RateTracker(object):
+
+  def __init__(self, smooth_factor=0.4):
+    self._smooth_factor = smooth_factor
+    self._start_time = time.time()
+    self._partial_time = self._start_time
+    self._partial_count = 0.0
+    self._partial_rate = None
+    self._count = 0.0
+
+  def _update(self, now, rate):
+    self._partial_count += self._count
+    self._count = 0.0
+    self._partial_time = now
+    self._partial_rate = rate
+
+  def add(self, count):
+    self._count += count
+
+  def _smooth(self, current_rate):
+    if self._partial_rate is None:
+      smoothed_rate = current_rate
+    else:
+      smoothed_rate = ((1 - self._smooth_factor) * current_rate +
+                       self._smooth_factor * self._partial_rate)
+    return smoothed_rate
+
+  def rate(self):
+    now = time.time()
+    delta = now - self._partial_time
+    report_rate = 0.0
+    if delta > 0:
+      report_rate = self._smooth(self._count / delta)
+      self._update(now, report_rate)
+    return report_rate
+
+  def global_rate(self):
+    delta = time.time() - self._start_time
+    count = self._partial_count + self._count
+    return count / delta if delta > 0 else 0.0
+
 
 
