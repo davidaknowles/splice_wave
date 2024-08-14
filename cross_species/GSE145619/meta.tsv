@@ -1,0 +1,7 @@
+tissue	assay	species	filename	original
+stage105	ATAC	xenopus_tropicalis	stage105_ATAC.bed.gz	GSM4322285_ATACseq_stage105_R1_peaks.bed.gz,GSM4322286_ATACseq_stage105_R2_peaks.bed.gz
+stage12	ATAC	xenopus_tropicalis	stage12_ATAC.bed.gz	GSM4322287_ATACseq_stage12_R1_peaks.bed.gz,GSM4322288_ATACseq_stage12_R2_peaks.bed.gz
+stage9	ATAC	xenopus_tropicalis	stage9_ATAC.bed.gz	GSM4322284_ATACseq_stage9_R2_peaks.bed.gz,GSM4322283_ATACseq_stage9_R1_peaks.bed.gz
+Blastoporelip	ATAC	xenopus_tropicalis	Blastoporelip_ATAC.bed.gz	GSM4322294_ATACseq_Blastoporelip_R2_peaks.bed.gz,GSM4322293_ATACseq_Blastoporelip_R1_peaks.bed.gz
+stage16	ATAC	xenopus_tropicalis	stage16_ATAC.bed.gz	GSM4322289_ATACseq_stage16_R1_peaks.bed.gz,GSM4322290_ATACseq_stage16_R2_peaks.bed.gz
+AnimalCap	ATAC	xenopus_tropicalis	AnimalCap_ATAC.bed.gz	GSM4322292_ATACseq_AnimalCap_R2_peaks.bed.gz,GSM4322291_ATACseq_AnimalCap_R1_peaks.bed.gz
