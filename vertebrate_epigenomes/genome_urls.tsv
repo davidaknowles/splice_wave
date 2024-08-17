@@ -1,0 +1,15 @@
+species	genome	url
+ovis_aries	Oar_rambouillet_v1.0	https://ftp.ensembl.org/pub/release-110/fasta/ovis_aries_rambouillet/dna/Ovis_aries_rambouillet.Oar_rambouillet_v1.0.dna.toplevel.fa.gz
+capra_hircus	ARS1	https://ftp.ensembl.org/pub/release-112/fasta/capra_hircus/dna/Capra_hircus.ARS1.dna.toplevel.fa.gz
+mus_musculus	GRCm38	ftp://ftp.ensembl.org/pub/release-102/fasta/mus_musculus/dna/Mus_musculus.GRCm38.dna.toplevel.fa.gz
+mus_musculus	GRCm39	https://ftp.ensembl.org/pub/release-112/fasta/mus_musculus/dna/Mus_musculus.GRCm39.dna.toplevel.fa.gz
+macaca_mulatta	Mmul_10	https://ftp.ensembl.org/pub/release-112/fasta/macaca_mulatta/dna/Macaca_mulatta.Mmul_10.dna.toplevel.fa.gz
+oryctolagus_cuniculus	OryCun2.0	https://ftp.ensembl.org/pub/release-112/fasta/oryctolagus_cuniculus/dna/Oryctolagus_cuniculus.OryCun2.0.dna.toplevel.fa.gz
+sus_scrofa	Sscrofa11.1	https://ftp.ensembl.org/pub/release-112/fasta/sus_scrofa/dna/Sus_scrofa.Sscrofa11.1.dna.toplevel.fa.gz
+xenopus_tropicalis	Xenopus_tropicalis_v9.1	https://ftp.ensembl.org/pub/release-106/fasta/xenopus_tropicalis/dna/Xenopus_tropicalis.Xenopus_tropicalis_v9.1.dna.toplevel.fa.gz
+gallus_gallus	galGal5	https://hgdownload.soe.ucsc.edu/goldenPath/galGal5/bigZips/galGal5.fa.gz
+gallus_gallus	GRCg6a	https://ftp.ensembl.org/pub/release-106/fasta/gallus_gallus/dna/Gallus_gallus.GRCg6a.dna.toplevel.fa.gz
+bos_taurus	ARS-UCD1.2	https://ftp.ensembl.org/pub/release-110/fasta/bos_taurus/dna/Bos_taurus.ARS-UCD1.2.dna.toplevel.fa.gz
+homo_sapiens	GRCh38	https://ftp.ensembl.org/pub/release-112/fasta/homo_sapiens/dna/Homo_sapiens.GRCh38.dna.toplevel.fa.gz
+rattus_norvegicus	Rnor_6.0	https://ftp.ensembl.org/pub/release-104/fasta/rattus_norvegicus/dna/Rattus_norvegicus.Rnor_6.0.dna.toplevel.fa.gz
+danio_rerio	GRCz11	https://www.dropbox.com/scl/fi/xdouitqa8h5vrh8tqq1yk/GRCz11.fa.gz?rlkey=3pjtzjsigor8k2xuzqav24ks0&dl=1

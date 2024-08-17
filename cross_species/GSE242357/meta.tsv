@@ -1,9 +1,0 @@
-tissue	assay	species	filename	original
-kidney	ATAC	rattus_norvegicus	kidney_ATAC.bed.gz	motrpac_pass1b-06_t59-kidney_epigen-atac-seq_counts.txt.gz
-hippocampus	ATAC	rattus_norvegicus	hippocampus_ATAC.bed.gz	motrpac_pass1b-06_t52-hippocampus_epigen-atac-seq_counts.txt.gz
-liver	ATAC	rattus_norvegicus	liver_ATAC.bed.gz	motrpac_pass1b-06_t68-liver_epigen-atac-seq_counts.txt.gz
-gastrocnemius	ATAC	rattus_norvegicus	gastrocnemius_ATAC.bed.gz	motrpac_pass1b-06_t55-gastrocnemius_epigen-atac-seq_counts.txt.gz
-lung	ATAC	rattus_norvegicus	lung_ATAC.bed.gz	motrpac_pass1b-06_t66-lung_epigen-atac-seq_counts.txt.gz
-brown-adipose	ATAC	rattus_norvegicus	brown-adipose_ATAC.bed.gz	motrpac_pass1b-06_t69-brown-adipose_epigen-atac-seq_counts.txt.gz
-heart	ATAC	rattus_norvegicus	heart_ATAC.bed.gz	motrpac_pass1b-06_t58-heart_epigen-atac-seq_counts.txt.gz
-white-adipose	ATAC	rattus_norvegicus	white-adipose_ATAC.bed.gz	motrpac_pass1b-06_t70-white-adipose_epigen-atac-seq_counts.txt.gz
