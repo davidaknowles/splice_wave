@@ -51,3 +51,7 @@ BERT style MLM training, with SpliceAI arch. Isn't learning seq->is_exon well.
  - structured diffusion models: https://github.com/google-research/google-research/blob/master/d3pm/text/diffusion.py
  - check if my BLD works on MNIST at least (might need making 2d?)
  - Currently running logit_diffusion cat, i.e. separately modeling is_exon and sequence. 
+
+## Epigenomics
+
+ - ideally we would get an LLM-based embedding of the tissue label. A simpler approach would be to initialize the embeddings to be more similar when there are more matching subphrases. 

@@ -2,6 +2,8 @@ import pandas as pd
 from pathlib import Path
 import wget
 import concurrent.futures
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 # add species to genome_urls
 vertebrate_epigenomes = Path("vertebrate_epigenomes")
@@ -17,6 +19,14 @@ def download_genome(data):
     if not gfile.exists():
         print(f"Downloading {genome}")
         wget.download(url, out=str(gfile))
+
+    genome_dict = get_fasta(gfile, verbose = False)
+    sequence_id_array = pa.array(genome_dict.keys())
+    sequence_array = pa.array(genome_dict.values())
+
+    table = pa.Table.from_arrays([sequence_id_array, sequence_array], names=['sequence_id', 'sequence'])
+
+    pq.write_table(table, genomes_dir / f"{genome}.parquet") 
 
 # Create a list of tuples for the download function
 download_data = [(row['genome'], row['species'], row['url'], genomes_dir) for _, row in genome_urls.iterrows()]

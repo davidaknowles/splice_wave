@@ -19,7 +19,7 @@ def get_fasta(fasta_file, verbose = False):
         for l in f:
             l=l.decode().strip()
             if l[0]==">":
-                current_chrom=l[1:].strip()
+                current_chrom=l[1:].split()[0].strip()
                 dic[current_chrom]=[]
                 if verbose: print("Loading "+current_chrom)
             else:

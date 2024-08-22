@@ -13,8 +13,8 @@ except ImportError as e:
         import mambapy.mamba
     
         class Mamba(mambapy.mamba.MambaBlock): 
-            def __init__(self, d_model, n_layers = 1, pscan = "heinsen", **kwargs): 
-                config = mambapy.mamba.MambaConfig(d_model, n_layers, pscan = pscan, **kwargs)
+            def __init__(self, d_model, n_layers = 1, **kwargs): # L = None, pscan = "heinsen", 
+                config = mambapy.mamba.MambaConfig(d_model, n_layers, **kwargs)
                 super().__init__(config)
                 
     except ImportError as e: 
@@ -36,15 +36,13 @@ class Chomp1d(nn.Module):
         return x[:, :, :-self.chomp_size] # .contiguous() # needed? 
 
 class MambaBlock(nn.Module):
-    def __init__(self, n_embed) -> None:
+    def __init__(self, n_embed, **kwargs) -> None:
         super().__init__()
         self.mixer = Mamba( # This module uses roughly 3 * expand * d_model^2 parameters
             d_model=n_embed, # Model dimension d_model
-            d_state=16,  # SSM state expansion factor (this is the default)
-            d_conv=4,    # Local convolution width (this is the default)
-            expand=2,    # Block expansion factor (this is the default)
-        ) # .to("cuda")
-        self.ln = nn.LayerNorm(n_embed)
+            **kwargs
+        )
+        self.ln = nn.LayerNorm(n_embed) # Try RMSNorm instead? 
 
     def forward(self, x): # x must be batch x time x channels
         return self.ln(x + self.mixer(x))
@@ -255,32 +253,34 @@ class MambaNet(nn.Module):
         super().__init__()
         self.token_embedding_table = nn.Embedding(vocab_size,n_embed)
         self.position_embedding_table = nn.Embedding(block_size,n_embed) if pos_embedding else None
-        self.in_proj = nn.Linear(input_channels, n_embed) 
+        self.in_proj = nn.Linear(input_channels, n_embed) if input_channels>0 else None
         block = BidirMambaBlock if bidir else MambaBlock
         self.blocks = nn.Sequential(*[block(n_embed) for _ in range(n_layers)])
         self.lm_head = nn.Linear(n_embed, vocab_size) # TODO: tie to embeddings
-        self.out_proj = nn.Linear(n_embed, input_channels)
+        self.out_proj = nn.Linear(n_embed, input_channels) if input_channels>0 else None
         
-    def forward(self, seq, input):
+    def forward(self, seq, inp = None):
         """
         seq: DNA sequence, integer encoding
         input: other stuff (continuous in general), e.g. is_exonic
         """
         B,T = seq.shape
-        x = self.token_embedding_table(seq) + self.in_proj(input) # (B,T,C_e)
+        x = self.token_embedding_table(seq) # (B,T,C_e)
+        if self.in_proj is not None: 
+            x += self.in_proj(inp) 
         if self.position_embedding_table:
-          x += self.position_embedding_table(torch.arange(T,device=idx.device)) # (T,C_e)
+          x += self.position_embedding_table(torch.arange(T,device=seq.device)) # (T,C_e)
         x = self.blocks(x) # (B,T,C_e)
-        return self.lm_head(x), self.out_proj(x)
+        return self.lm_head(x), self.out_proj(x) if self.out_proj else None
 
 class MambaOneHotNet(nn.Module):
     
-    def __init__(self, in_channels, out_channels, n_embed, n_layers, receptive_field, bidir = False):
+    def __init__(self, in_channels, out_channels, n_embed, n_layers, receptive_field, bidir = False, **kwargs):
         super().__init__()
         self.receptive_field = receptive_field
         self.in_proj = nn.Linear(in_channels, n_embed) # better off with a convolution? 
         block = BidirMambaBlock if bidir else MambaBlock
-        self.blocks = nn.Sequential(*[block(n_embed) for _ in range(n_layers)])
+        self.blocks = nn.Sequential(*[block(n_embed, **kwargs) for _ in range(n_layers)])
         self.out_proj = nn.Linear(n_embed, out_channels)
         
     def forward(self, x):
@@ -291,5 +291,6 @@ class MambaOneHotNet(nn.Module):
         x = x.permute(0,2,1)
         x = self.in_proj(x) # (B,T,C_e)
         x = self.blocks(x) # (B,T,C_e)
-        return self.out_proj(x).permute(0,2,1)[:, :, self.receptive_field:-self.receptive_field ]
+        x = self.out_proj(x).permute(0,2,1)
+        return x[:, :, self.receptive_field:-self.receptive_field ] if (self.receptive_field > 0) else x 
 
