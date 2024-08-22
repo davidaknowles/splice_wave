@@ -152,7 +152,8 @@ class TrainXLADDP():
         xm.master_print(*args, **kwargs) if self.xla else print(*args, **kwargs)
     
     def print(self, *args, **kwargs): 
-        if self.xla: args = [f"device {xm.get_ordinal()}"] + args
+        if self.xla: 
+            print(f"device {xm.get_ordinal()}:", end = " ")
         print(*args, **kwargs)
     
     def train(self):
