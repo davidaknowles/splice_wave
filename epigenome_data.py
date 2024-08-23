@@ -79,10 +79,18 @@ class BedDataset(torch.utils.data.Dataset):
             "+" if (np.random.rand() < 0.5) else "-" # should return RC with 50% chance
         )
 
-        assert not seq is None
-        assert len(seq) == self.width
+        #assert not seq is None
+        #assert len(seq) == self.width
 
-        one_hot_enc = one_hot.one_hot(seq) # if to_one_hot else seq
+        if seq is None: 
+            print("Warning: seq is None")
+            one_hot_enc = np.zeros((self.width, 4))
+        else: 
+            # will be L x 4
+            one_hot_enc = one_hot.one_hot(seq) # if to_one_hot else seq
+            if len(seq) < self.width: 
+                rows_to_pad = self.width - len(seq)
+                one_hot_enc = np.pad(one_hot_enc, ((0, rows_to_pad), (0, 0)))
 
         return (self.species_int[i], self.tissue_int[i], self.assay_int[i], one_hot_enc) 
 

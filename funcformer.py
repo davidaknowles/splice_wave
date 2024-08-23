@@ -141,8 +141,8 @@ class TrainXLADDP():
             #torch_xla.sync()
             if verbose: self.print("markstep done")
             
-            #total_loss = total_loss.item()
-            total_loss = 0.
+            total_loss = total_loss.item()
+            #total_loss = 0.
             if verbose: self.print("item() done")
         
         if verbose: self.print("results gathered")
@@ -179,6 +179,10 @@ class TrainXLADDP():
             pd.DataFrame({
                 "train_loss" : train_losses, 
                 "test_loss" : test_losses}).to_csv("progress.tsv", sep = "\t", index = False)
+
+            if xm.get_ordinal() == 0:
+                xm.save(self.model.state_dict(), "model_checkpoint.pth")
+
         if self.xla: 
             xm.wait_device_ops()
         
@@ -188,20 +192,12 @@ def _mp_fn(index, flags):
     xla_ddp.train()
 
 if __name__ == '__main__':
-
-    if True: 
-        flags = { 
-            "use_xla" : True,
-            "batch_size" : 100, 
-            "data_parallel" : False
-        } 
-    else:
-        flags = { 
-            "use_xla" : False,
-            "batch_size" : 10, 
-            "data_parallel" : False
-        } 
-
+ 
+    flags = { 
+        "use_xla" : True,
+        "batch_size" : 100, 
+        "data_parallel" : True
+    } 
     print(flags)
     
     if flags["data_parallel"]: 
