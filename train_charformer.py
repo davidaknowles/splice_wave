@@ -9,6 +9,8 @@ except ImportError:
     print("Couldn't import torch_xla") 
     XLA_AVAILABLE = False
 
+from functools import partial
+
 import time
 import itertools
 
@@ -21,6 +23,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import importlib
 import torch.utils.data 
+
+import charformer
 
 import epigenome_data
 import numpy as np
@@ -52,30 +56,49 @@ class TrainXLADDP():
         self.data_parallel = data_parallel
         self.sequence_len = sequence_len
 
-        #tissue_embeds = pd.read_csv(vertebrate_epigenomes / "tissue_embeds.tsv", sep = "\t", index_col = 0)        
+        #tissue_embeds = pd.read_csv(vertebrate_epigenomes / "tissue_embeds.tsv", sep = "\t", index_col = 0)
+        
         in_channels = 4
         out_channels = 4
 
-        self.model = tcn.MambaOneHotNet(
-            in_channels = in_channels, 
-            out_channels = out_channels, 
-            n_embed = 64, 
-            n_layers = 8, 
-            receptive_field = 0, 
-            L = sequence_len, 
-            batch_size = batch_size,
-            bidir = bidir
-        ).to(self.device)
+        if False: 
+            self.model = tcn.MambaOneHotNet(
+                in_channels = in_channels, 
+                out_channels = out_channels, 
+                n_embed = 64, 
+                n_layers = 8, 
+                receptive_field = 0, 
+                L = sequence_len, 
+                batch_size = batch_size,
+                bidir = bidir
+            ).to(self.device)
+        else: 
+            mixer_cls = partial(
+                nn.TransformerEncoderLayer,
+                nhead = 4, 
+                dim_feedforward = 64, 
+                dropout = 0., 
+                bias = True # try false
+            )
+            self.model = charformer.Charformer(
+                input_dim = in_channels, 
+                d_model = 32, 
+                output_dim = out_channels,
+                downsample_factor = 4, 
+                #max_block_size = 5, 
+                blocks = ((1,0),(3,0),(5,0)),
+                mixer_cls = mixer_cls
+            )
 
-        bed_data, genome_dict = epigenome_data.load_data(None, width = sequence_len) # ["ARS1"]
+        bed_data, genome_dict = epigenome_data.load_data(["ARS1"], width = sequence_len)
         
         chrom1 = bed_data["chrom"] == "1"
         
         train_data = bed_data[ ~chrom1 ]
         test_data = bed_data[ chrom1 ]
 
-        train_dataset = epigenome_data.BedDataset(train_data, genome_dict, width = sequence_len) 
-        test_dataset = epigenome_data.BedDataset(test_data, genome_dict, width = sequence_len) 
+        train_dataset = epigenome_data.BedDataset(train_data, genome_dict, width = sequence_len, mask = True) 
+        test_dataset = epigenome_data.BedDataset(test_data, genome_dict, width = sequence_len, mask = True) 
 
         if data_parallel: 
             train_sampler = torch.utils.data.distributed.DistributedSampler(
@@ -116,19 +139,17 @@ class TrainXLADDP():
 
         for step_i, dat in enumerate(self.train_device_loader if train else self.test_device_loader): 
 
-            species, tissue, assay, one_hot = dat
+            # we don't actually need lengths so could stop returning? 
+            species, tissue, assay, one_hot, one_hot_masked, mask = dat
 
             if train: 
                 self.optimizer.zero_grad()
 
-            # this is somewhat dumb: it's undone immediately in the model
-            one_hot = one_hot.permute(0,2,1) # B x T x C -> B x C x T 
-            
-            output = self.model(one_hot) # B x C x T
+            output = self.model(one_hot_masked) # input and output are B x C x T
+            seq_mask = mask[:, None, 1:].float()
 
-            seq_out_norm = output - output.logsumexp(1, keepdims = True)
-            one_hot_chomped = one_hot[:,:,1:]
-            loss = - (one_hot_chomped * seq_out_norm[:,:,:-1]).sum() / (one_hot_chomped.sum() + 1e-8) 
+            out_norm = output - output.logsumexp(1, keepdims = True)
+            loss = - (seq_mask * one_hot[:,:,1:] * out_norm[:,:,:-1]).sum() / (seq_mask.sum() + 1e-8) 
 
             if train: 
                 loss.backward()
@@ -143,11 +164,11 @@ class TrainXLADDP():
             tracker.add(self.batch_size)
 
             if step_i % 100 == 0:
-                if self.xla:
+                if self.xla:     
                     xm.add_step_closure(self._train_update, args=(step_i, loss, tracker, epoch))
                 else: 
                     self._train_update(step_i, loss, tracker, epoch)
-    
+        
         if self.xla:     
             self.print("finished")
             xm.add_step_closure(self._train_update, args=(step_i, loss, tracker, epoch))
@@ -218,9 +239,9 @@ def _mp_fn(index, flags):
 if __name__ == '__main__':
  
     flags = { 
-        "use_xla" : True,
+        "use_xla" : False,
         "batch_size" : 100, 
-        "data_parallel" : True
+        "data_parallel" : False
     } 
     print(flags)
     

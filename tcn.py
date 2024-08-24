@@ -285,12 +285,11 @@ class MambaOneHotNet(nn.Module):
         
     def forward(self, x):
         """
-        seq: DNA sequence, integer encoding
-        input: other stuff (continuous in general), e.g. is_exonic
+        x: DNA sequence one hot encoded. B x C x T
         """
-        x = x.permute(0,2,1)
+        x = x.permute(0,2,1) # B x C x T -> B x T x C
         x = self.in_proj(x) # (B,T,C_e)
         x = self.blocks(x) # (B,T,C_e)
-        x = self.out_proj(x).permute(0,2,1)
+        x = self.out_proj(x).permute(0,2,1) # back to B x C x T
         return x[:, :, self.receptive_field:-self.receptive_field ] if (self.receptive_field > 0) else x 
 

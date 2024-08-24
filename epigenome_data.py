@@ -17,7 +17,7 @@ import wget
 import pyarrow as pa
 import pyarrow.parquet as pq
 from torch.utils.data import DataLoader
-
+import transcript_data
 import requests
 
 def clean_chroms(chroms): 
@@ -30,7 +30,7 @@ def parquet_to_genome_dict(fn):
 
 class BedDataset(torch.utils.data.Dataset):
 
-    def __init__(self, data, genome_dicts, width=1000):
+    def __init__(self, data, genome_dicts, width=1000, mask = False):
 
         super().__init__()
         self.width = width
@@ -42,6 +42,8 @@ class BedDataset(torch.utils.data.Dataset):
         self.assay_int = data['assay'].cat.codes.reset_index(drop=True)
         
         self.genome_dicts = genome_dicts
+
+        self.mask = mask
 
     def __len__(self):
         return len(self.data)
@@ -92,7 +94,14 @@ class BedDataset(torch.utils.data.Dataset):
                 rows_to_pad = self.width - len(seq)
                 one_hot_enc = np.pad(one_hot_enc, ((0, rows_to_pad), (0, 0)))
 
-        return (self.species_int[i], self.tissue_int[i], self.assay_int[i], one_hot_enc) 
+        to_return = [self.species_int[i], self.tissue_int[i], self.assay_int[i], one_hot_enc]
+
+        if self.mask: 
+            one_hot_masked = one_hot_enc.clone()
+            mask = transcript_data.get_mask_np_efficient(one_hot_enc) 
+            to_return += [ one_hot_masked, mask ]
+        
+        return to_return
 
 def load_data(genome_subset = None, width = 1000): 
     vertebrate_epigenomes = Path("vertebrate_epigenomes")
@@ -121,12 +130,9 @@ def load_data(genome_subset = None, width = 1000):
     bed_data['species'] = bed_data['species'].astype("category")
     bed_data['assay'] = bed_data['assay'].astype("category")
 
-    chrom1 = bed_data["chrom"] == "1"
-    
-    val_dataset = BedDataset(bed_data[ chrom1 ], genome_dict, width = width) 
-    train_dataset = BedDataset(bed_data[ ~chrom1 ], genome_dict, width = width) 
+    return bed_data, genome_dict
 
-    # don't make the DataLoaders here so we can set batch_size & num_workers more easily
-    return train_dataset, val_dataset, bed_data # need bed_data for the category mappings
+if __name__ == "__main__":
 
+    bed_data, genome_dict = load_data()
 

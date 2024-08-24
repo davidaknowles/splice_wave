@@ -234,7 +234,7 @@ class GBST_OG(nn.Module):
         x = x.transpose(1,2)
         return self.gbst(x)
 
-class Model(nn.Module): 
+class Charformer(nn.Module): 
 
     def __init__(
         self, 
@@ -293,7 +293,7 @@ if __name__ == "__main__":
         bias = True # try false
     )
 
-    model = Model(
+    model = Charformer(
         input_dim = vocab_size, 
         d_model = 32, 
         output_dim = vocab_size,
@@ -305,10 +305,10 @@ if __name__ == "__main__":
 
     batch_size = 3
     seq_len = 100
-    tokens = torch.rand(batch_size, vocab_size, seq_len) # uneven number of tokens (1023)
+    tokens = torch.rand(batch_size, vocab_size, seq_len) 
     
     # both tokens and mask will be appropriately downsampled
     
     x = model(tokens, L = seq_len)
-    x.shape # batch x len x dim
+    x.shape 
 
