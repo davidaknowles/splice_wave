@@ -234,6 +234,28 @@ class GBST_OG(nn.Module):
         x = x.transpose(1,2)
         return self.gbst(x)
 
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, seq_len=5000):
+        super().__init__()
+        self.d_model = d_model
+
+        # Create a positional encoding matrix of size (max_len, d_model)
+        pe = torch.zeros(seq_len, d_model)
+        position = torch.arange(0, seq_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        
+        # Apply the sine to even indices in the array; 2i
+        pe[:, 0::2] = torch.sin(position * div_term)
+        # Apply the cosine to odd indices in the array; 2i+1
+        pe[:, 1::2] = torch.cos(position * div_term)
+        
+        pe = pe.unsqueeze(0)  # Add a batch dimension (1, max_len, d_model)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        # x has shape (batch_size, seq_len, d_model)
+        return x + self.pe
+
 class Charformer(nn.Module): 
 
     def __init__(
@@ -243,6 +265,7 @@ class Charformer(nn.Module):
         output_dim,
         downsample_factor, 
         mixer_cls, 
+        seq_len, 
         max_block_size = None, 
         blocks = None, 
         num_layers = 3, 
@@ -250,6 +273,10 @@ class Charformer(nn.Module):
         final_kernel_size = 7
     ): 
         super().__init__()
+        self.pe = PositionalEncoding(
+            d_model, 
+            seq_len = seq_len // downsample_factor
+        )
         self.tokenizer = GBST(
             input_dim = input_dim,
             d_model = d_model,                    # dimension of token and intra-block positional embedding
@@ -272,6 +299,7 @@ class Charformer(nn.Module):
 
     def forward(self, x, L = None): 
         char_x, x, _ = self.tokenizer(x, L = L) 
+        x = self.pe(x)
         x = self.mixer(x)
         x = self.up(x) + char_x.transpose(1,2)
         x = F.relu(x) 
@@ -284,6 +312,7 @@ if __name__ == "__main__":
     from functools import partial
     
     vocab_size = 4
+    seq_len = 100
 
     mixer_cls = partial(
         nn.TransformerEncoderLayer,
@@ -294,6 +323,7 @@ if __name__ == "__main__":
     )
 
     model = Charformer(
+        seq_len = seq_len, 
         input_dim = vocab_size, 
         d_model = 32, 
         output_dim = vocab_size,
@@ -304,11 +334,10 @@ if __name__ == "__main__":
     )
 
     batch_size = 3
-    seq_len = 100
     tokens = torch.rand(batch_size, vocab_size, seq_len) 
     
     # both tokens and mask will be appropriately downsampled
     
     x = model(tokens, L = seq_len)
-    x.shape 
+    print(x.shape)
 

@@ -81,12 +81,13 @@ class TrainXLADDP():
                 bias = True # try false
             )
             self.model = charformer.Charformer(
+                seq_len = sequence_len,
                 input_dim = in_channels, 
-                d_model = 32, 
+                d_model = 128, 
                 output_dim = out_channels,
                 downsample_factor = 4, 
                 #max_block_size = 5, 
-                blocks = ((1,0),(3,0),(5,0)),
+                blocks = ((1,0),(3,0),(5,0),(7,0)),
                 mixer_cls = mixer_cls
             )
 

@@ -121,7 +121,7 @@ def load_data(genome_subset = None, width = 1000):
         parquet_genome = genomes_dir / f"{genome}.parquet"
         genome_dict[genome] = parquet_to_genome_dict(parquet_genome)
     
-    bed_data = pd.read_parquet( vertebrate_epigenomes / "vertebrate_epigenomes.parquet")
+    bed_data = pd.read_parquet( vertebrate_epigenomes / "vertebrate_epigenomes_filt.parquet")
 
     if genome_subset is not None: 
         bed_data = bed_data[ bed_data["genome"].isin(genome_subset) ]
@@ -136,3 +136,19 @@ if __name__ == "__main__":
 
     bed_data, genome_dict = load_data()
 
+    for genome in genome_dict:
+        print(genome)
+        genome_chroms = genome_dict[genome].keys()
+        genome_data = bed_data[ bed_data["genome"] == genome ]
+        print(pd.Series(genome_data["chrom"].unique()).isin(genome_chroms).mean())
+
+    filter_bed_data = pd.concat(
+        [
+            bed_data[(bed_data["genome"] == genome) & (bed_data["chrom"].isin(gd.keys()))]
+            for genome, gd in genome_dict.items()
+        ],
+        axis=0
+    )
+
+    vertebrate_epigenomes = Path("vertebrate_epigenomes")
+    filter_bed_data.to_parquet( vertebrate_epigenomes / "vertebrate_epigenomes_filt.parquet")
