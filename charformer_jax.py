@@ -12,6 +12,8 @@ import optax
 from functools import partial
 from jax.scipy.special import logsumexp
 from utils import RateTracker
+import pandas as pd
+from pathlib import Path
 
 # TODO: residual connections, layernorm
 class Conv1DLayer(eqx.Module):
@@ -44,7 +46,7 @@ class FullyConvSeq2Seq(eqx.Module):
         return x
 
     
-@eqx.filter_value_and_grad
+#@eqx.filter_value_and_grad
 def compute_loss(model, one_hot_T, one_hot_masked_T, mask):
     output = jax.vmap(model)(one_hot_masked_T)
     out_norm = output - logsumexp(output, axis=1, keepdims=True)
@@ -56,18 +58,25 @@ def compute_loss(model, one_hot_T, one_hot_masked_T, mask):
 
 @eqx.filter_jit
 def make_step(model, one_hot_T, one_hot_masked_T, mask, opt_state):
-    loss, grads = compute_loss(model, one_hot_T, one_hot_masked_T, mask)
+    loss, grads = eqx.filter_value_and_grad(compute_loss)(model, one_hot_T, one_hot_masked_T, mask)
     updates, opt_state = optim.update(grads, opt_state)
     model = eqx.apply_updates(model, updates)
     return loss, model, opt_state
+
+@eqx.filter_jit(donate="all-except-first")
+def evaluate(model, one_hot_T, one_hot_masked_T, mask, rep_sharding):
+    model = eqx.filter_shard(model, rep_sharding)
+    one_hot_T, one_hot_masked_T, mask = eqx.filter_shard((one_hot_T, one_hot_masked_T, mask), rep_sharding)
+    return compute_loss(model, one_hot_T, one_hot_masked_T, mask)
 
 @eqx.filter_jit(donate="all")
 def train_step(model, opt_state, one_hot_T, one_hot_masked_T, mask, rep_sharding):
-    #replicated = sharding.replicate()
     model, opt_state = eqx.filter_shard((model, opt_state), rep_sharding)
+
+    # patrick says this would just act as an assertion here
     #one_hot_T, one_hot_masked_T, mask = eqx.filter_shard((one_hot_T, one_hot_masked_T, mask), replicated)
 
-    loss, grads = compute_loss(model, one_hot_T, one_hot_masked_T, mask)
+    loss, grads = eqx.filter_value_and_grad(compute_loss)(model, one_hot_T, one_hot_masked_T, mask)
     updates, opt_state = optim.update(grads, opt_state)
     model = eqx.apply_updates(model, updates)
 
@@ -75,10 +84,41 @@ def train_step(model, opt_state, one_hot_T, one_hot_masked_T, mask, rep_sharding
 
     return loss, model, opt_state
 
+def loop(dataloader, model, rep_sharding, opt_state = None): 
+    
+    losses = []
+    tracker = RateTracker()
+    
+    for step, batch in enumerate(dataloader):
+        species, tissue, assay, one_hot, one_hot_masked, mask = batch
+        
+        one_hot_masked_T = np.swapaxes(one_hot_masked, 1, 2)
+        one_hot_T = np.swapaxes(one_hot, 1, 2)
+    
+        one_hot, one_hot_masked, mask = eqx.filter_shard((one_hot, one_hot_masked, mask), rep_sharding)
+
+        if opt_state is None: 
+            loss = evaluate(model, one_hot_T, one_hot_masked_T, mask, rep_sharding)
+        else: 
+            loss, model, opt_state = train_step(model, opt_state, one_hot_T, one_hot_masked_T, mask, rep_sharding)
+        
+        loss = loss.item()
+        
+        losses.append(loss)
+
+        tracker.add(batch_size)
+        
+        if step % 500 == 0: 
+            print(f"Epoch:{epoch} step:{step}, loss:{loss} rate:{tracker.rate()}")
+    
+    epoch_loss = np.mean(losses)
+    return model, opt_state, epoch_loss
+
 sequence_len = 1024
 batch_size = 512 
+num_workers = 100
 
-bed_data, genome_dict = epigenome_data.load_data(None, width = sequence_len) # ["GRCg6a"]
+bed_data, genome_dict = epigenome_data.load_data(["GRCg6a"], width = sequence_len) # ["GRCg6a"]
         
 chrom1 = bed_data["chrom"] == "1"
 
@@ -86,16 +126,24 @@ train_data = bed_data[ ~chrom1 ]
 test_data = bed_data[ chrom1 ]
 
 train_dataset = epigenome_data.BedDataset(train_data, genome_dict, width = sequence_len, mask = True) 
+test_dataset = epigenome_data.BedDataset(test_data, genome_dict, width = sequence_len, mask = True) 
 
-train_dataset_casted = cast(jdl.datasets.Dataset, train_dataset)
-
-dataloader = jdl.DataLoader(
+train_dataloader = jdl.DataLoader(
     train_dataset, # Can be a jdl.Dataset or pytorch or huggingface or tensorflow dataset
     backend='pytorch', # Use 'jax' backend for loading data
     batch_size=batch_size, # Batch size 
     shuffle=True, # Shuffle the dataloader every iteration or not
     drop_last=True, # Drop the last batch or not
-    num_workers = 100
+    num_workers = num_workers
+) # type: ignore
+
+test_dataloader = jdl.DataLoader(
+    test_dataset, # Can be a jdl.Dataset or pytorch or huggingface or tensorflow dataset
+    backend='pytorch', # Use 'jax' backend for loading data
+    batch_size=batch_size, # Batch size 
+    shuffle=False, # Shuffle the dataloader every iteration or not
+    drop_last=True, # Drop the last batch or not
+    num_workers = num_workers
 ) # type: ignore
 
 model = FullyConvSeq2Seq(
@@ -115,34 +163,26 @@ rep_sharding = sharding.replicate()
 
 model = eqx.filter_shard(model, rep_sharding)
 
+optim = optax.adam(learning_rate = 3e-3)
 opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
-#opt_state = jax.device_put_replicated(opt_state, jax.local_devices())
-#model_params = jax.device_put_replicated(eqx.filter(model, eqx.is_inexact_array), jax.local_devices())
-#train_key = jax.device_put_replicated(train_key, jax.local_devices())
+results_dir = Path("charformer_jax_results")
+results_dir.mkdir(exist_ok = True)
 
-epoch_losses = []
+train_losses = []
+test_losses = []
 for epoch in range(50): 
-    losses = []
-    tracker = RateTracker()
-    
-    for step, batch in enumerate(dataloader):
-        species, tissue, assay, one_hot, one_hot_masked, mask = batch
-        
-        one_hot_masked_T = np.swapaxes(one_hot_masked, 1, 2)
-        one_hot_T = np.swapaxes(one_hot, 1, 2)
-    
-        one_hot, one_hot_masked, mask = eqx.filter_shard((one_hot, one_hot_masked, mask), rep_sharding)
-        
-        loss, model, opt_state = train_step(model, opt_state, one_hot_T, one_hot_masked_T, mask, rep_sharding)
-        loss = loss.item()
-        losses.append(loss)
+    # training loop
+    np.random.seed( time.time_ns() % (2**32) )
+    model, opt_state, train_loss = loop(train_dataloader, model, rep_sharding, opt_state = opt_state)
+    train_losses.append(train_loss)
 
-        tracker.add(batch_size)
-        
-        if step % 500 == 0: 
-            print(f"Epoch:{epoch} step:{step}, loss:{loss} rate:{tracker.rate()}")
+    # validation loop
+    np.random.seed( 0 )
+    _, _, test_loss = loop(test_dataloader, model, rep_sharding, opt_state = None)
+    test_losses.append(test_loss)
     
-    epoch_loss = np.mean(losses)
-    epoch_losses.append(epoch_loss)
-    print(f"Epoch:{epoch} loss:{epoch_loss}")
+    print(f"Epoch:{epoch} train_loss:{train_loss} test_loss:{test_loss}")
+
+    eqx.tree_serialise_leaves(results_dir / "charformer_jax.pkl", model)
+    pd.DataFrame({"train_loss": train_losses, "test_loss" : test_losses}, 
