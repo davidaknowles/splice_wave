@@ -219,7 +219,7 @@ if __name__ == '__main__':
  
     flags = { 
         "use_xla" : True,
-        "batch_size" : 100, 
+        "batch_size" : 512, 
         "data_parallel" : True
     } 
     print(flags)

@@ -86,12 +86,13 @@ class TrainXLADDP():
                 d_model = 128, 
                 output_dim = out_channels,
                 downsample_factor = 4, 
+                num_layers = 8,
                 #max_block_size = 5, 
                 blocks = ((1,0),(3,0),(5,0),(7,0)),
                 mixer_cls = mixer_cls
-            )
+            ).to(self.device)
 
-        bed_data, genome_dict = epigenome_data.load_data(["ARS1"], width = sequence_len)
+        bed_data, genome_dict = epigenome_data.load_data(["ARS1"], width = sequence_len) # ["ARS1"]
         
         chrom1 = bed_data["chrom"] == "1"
         
@@ -146,7 +147,10 @@ class TrainXLADDP():
             if train: 
                 self.optimizer.zero_grad()
 
-            output = self.model(one_hot_masked) # input and output are B x C x T
+            one_hot = one_hot.transpose(1,2)
+            one_hot_masked = one_hot_masked.transpose(1,2)
+            
+            output = self.model(one_hot_masked, L = self.sequence_len) # input and output are B x C x T
             seq_mask = mask[:, None, 1:].float()
 
             out_norm = output - output.logsumexp(1, keepdims = True)
@@ -160,6 +164,7 @@ class TrainXLADDP():
             #   xm.mark_step()
 
             total_loss += loss
+            #loss = 0.
             total_count += self.batch_size # torch.tensor(self.batch_size, device = self.device)
             
             tracker.add(self.batch_size)
@@ -238,11 +243,12 @@ def _mp_fn(index, flags):
     xla_ddp.train()
 
 if __name__ == '__main__':
- 
+
     flags = { 
-        "use_xla" : False,
-        "batch_size" : 100, 
-        "data_parallel" : False
+        "use_xla" : True,
+        "batch_size" : 128, 
+        "data_parallel" : False,
+        "num_workers" : 20
     } 
     print(flags)
     

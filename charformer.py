@@ -105,7 +105,7 @@ class GBST(nn.Module):
         """x is B x D x L"""
 
         if L is None: 
-            L = x.shape[1] # try to avoid this on TPU
+            L = x.shape[2] # try to avoid this on TPU
 
         # do a conv to generate the positions for the tokens
         x = self.pos_conv(x) # still B x L x D
