@@ -4,6 +4,7 @@ import wget
 import concurrent.futures
 import pyarrow as pa
 import pyarrow.parquet as pq
+from utils import get_fasta
 
 # add species to genome_urls
 vertebrate_epigenomes = Path("vertebrate_epigenomes")

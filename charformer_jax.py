@@ -15,69 +15,12 @@ from utils import RateTracker
 import pandas as pd
 from pathlib import Path
 import time
+import eqx_modules
 
-import jax
-import jax.numpy as jnp
-import equinox as eqx
 import equinox.nn as nn
 
 MLM = False
-
-class GatedConv1d(eqx.Module):
-    conv_f: nn.Conv1d
-    conv_g: nn.Conv1d
-
-    def __init__(self, *args, key, **kwargs):
-        key1, key2 = jax.random.split(key)
-        self.conv_f = nn.Conv1d(*args, key=key1, **kwargs)
-        self.conv_g = nn.Conv1d(*args, key=key2, **kwargs)
-
-    def __call__(self, x):
-        f = self.conv_f(x)
-        g = self.conv_g(x)
-        return f * jax.nn.sigmoid(g)
-
-class Conv1DLayer(eqx.Module):
-    conv: nn.Conv1d
-    activation: callable
-
-    def __init__(self, in_channels, out_channels, kernel_size, stride, activation=jax.nn.relu, padding = "SAME", key=None, gated = False):
-        conv_cls = GatedConv1d if gated else nn.Conv1d
-        self.conv = conv_cls(in_channels, out_channels, kernel_size, stride, padding=padding, key=key)
-        self.activation = activation
-
-    def __call__(self, x):
-        return self.activation(self.conv(x))
-
-class ResConv1DLayer(eqx.Module):
-    conv: nn.Conv1d
-    activation: callable
-
-    def __init__(self, channels, kernel_size, stride, activation=jax.nn.relu, padding = "SAME", key=None, gated = False):
-        conv_cls = GatedConv1d if gated else nn.Conv1d
-        self.conv = conv_cls(channels, channels, kernel_size, stride, padding=padding, key=key)
-        self.activation = activation
-
-    def __call__(self, x):
-        return self.activation(self.conv(x)) + x
-
-class FullyConvSeq2Seq(eqx.Module):
-    layers: list
-
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers, kernel_size=3, stride=1, key=None, gated = False, causal = False):
-
-        keys = jr.split(key, num=num_layers + 1)
-        padding = ((kernel_size-1, 0),) if causal else "SAME"
-        self.layers = []
-        self.layers.append(Conv1DLayer(in_channels, hidden_channels, kernel_size, stride, key=keys[0], padding = padding, gated = gated))
-        for i in range(1, num_layers):
-            self.layers.append(ResConv1DLayer(hidden_channels, kernel_size, stride, key=keys[i], padding = padding, gated = gated))
-        self.layers.append(nn.Conv1d(hidden_channels, out_channels, kernel_size, stride, padding = padding, key=keys[-1]))
-
-    def __call__(self, x):
-        for layer in self.layers:
-            x = layer(x)
-        return x
+CONV = False
 
 #@eqx.filter_value_and_grad
 def compute_loss(model, data):
@@ -184,17 +127,29 @@ test_dataloader = jdl.DataLoader(
     num_workers = num_workers
 ) # type: ignore
 
-model = FullyConvSeq2Seq(
-    in_channels = 4, 
-    hidden_channels = 128, 
-    out_channels = 4, 
-    num_layers = 5, 
-    kernel_size = 7, 
-    gated = True,
-    causal = not MLM,
-    key = jr.PRNGKey(0)
-)
-
+if CONV: 
+    model = eqx_modules.FullyConvSeq2Seq(
+        in_channels = 4, 
+        hidden_channels = 128, 
+        out_channels = 4, 
+        num_layers = 5, 
+        kernel_size = 7, 
+        gated = True,
+        causal = not MLM,
+        key = jr.PRNGKey(0)
+    )
+else: 
+    model = Transformer(
+        in_channels = 4,
+        out_channels = 4,
+        kernel_size = 7, 
+        num_layers = 12, 
+        n_heads = 12, 
+        d_model = 384, 
+        d_ff = 128, 
+        causal = not MLM,
+        key = jr.PRNGKey(0)
+    )
 num_devices = len(jax.devices())
 devices = mesh_utils.create_device_mesh((num_devices,1))
 sharding = jshard.PositionalSharding(devices)
@@ -206,7 +161,7 @@ model = eqx.filter_shard(model, rep_sharding)
 optim = optax.adam(learning_rate = 3e-3)
 opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
-results_dir = Path("charformer_jax_results/gated")
+results_dir = Path("charformer_jax_results/transformer")
 results_dir.mkdir(exist_ok = True, parents = True)
 
 train_losses = []
