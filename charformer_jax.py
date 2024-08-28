@@ -19,7 +19,7 @@ import eqx_modules
 
 import equinox.nn as nn
 
-MLM = False
+MLM = True
 CONV = False
 
 #@eqx.filter_value_and_grad
@@ -96,10 +96,10 @@ def loop(dataloader, model, rep_sharding, opt_state = None):
     return model, opt_state, epoch_loss
 
 sequence_len = 1024
-batch_size = 512
+batch_size = 256
 num_workers = 50
 
-bed_data, genome_dict = epigenome_data.load_data(None, width = sequence_len) # ["GRCg6a"]
+bed_data, genome_dict = epigenome_data.load_data(["GRCg6a"], width = sequence_len) # ["GRCg6a"]
 
 chrom1 = bed_data["chrom"] == "1"
 
@@ -139,14 +139,14 @@ if CONV:
         key = jr.PRNGKey(0)
     )
 else: 
-    model = Transformer(
+    model = eqx_modules.Transformer(
         in_channels = 4,
         out_channels = 4,
         kernel_size = 7, 
         num_layers = 12, 
-        n_heads = 12, 
-        d_model = 384, 
-        d_ff = 128, 
+        n_heads = 4, 
+        d_model = 128, 
+        d_ff = 64, 
         causal = not MLM,
         key = jr.PRNGKey(0)
     )

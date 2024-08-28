@@ -105,9 +105,7 @@ class TransformerBlock(eqx.Module):
 
     def __call__(
         self,
-        x: jt.Int[jt.Array, "max_seq_len input_dim"],
-        mask: str | None = "causal",
-        **kwargs,
+        x: jt.Int[jt.Array, "max_seq_len input_dim"]
     ):
         def process_heads(query_heads, key_heads, value_heads):
             query_heads = jax.vmap(self.rope_embeddings, in_axes=1, out_axes=1)(query_heads)
