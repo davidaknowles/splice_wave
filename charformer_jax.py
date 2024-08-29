@@ -16,11 +16,199 @@ import pandas as pd
 from pathlib import Path
 import time
 import eqx_modules
-
+import eqx_transformer
+import gbst_jax
 import equinox.nn as nn
 
 MLM = True
-CONV = False
+MODEL = 'Charformer'
+
+class Charformer(eqx.Module): 
+
+    tokenizer: gbst_jax.GBST
+    transformer_stack: eqx_transformer.TransformerStack
+    up: nn.ConvTranspose1d
+    final: nn.Conv1d
+    
+    def __init__(
+        self, 
+        input_dim, 
+        d_model, 
+        output_dim,
+        downsample_factor, 
+        n_heads, 
+        d_ff, 
+        key, 
+        max_block_size = None, 
+        blocks = None, 
+        num_layers = 3, 
+        final_kernel_size = 7
+    ): 
+        super().__init__()
+        keys = jr.split(key, 4)
+
+        self.tokenizer = gbst_jax.GBST(
+            input_dim = input_dim,
+            d_model = d_model,                    # dimension of token and intra-block positional embedding
+            max_block_size = max_block_size,           # maximum block size
+            blocks = blocks,
+            downsample_factor = downsample_factor,        # the final downsample factor by which the sequence length will decrease by
+            key = keys[0]
+        )
+        self.transformer_stack = eqx_transformer.TransformerStack(
+            num_layers = num_layers, 
+            d_model = d_model, 
+            n_heads = n_heads, 
+            d_ff = d_ff,
+            key = keys[1]
+        )
+
+        self.up = nn.ConvTranspose1d(d_model, d_model, kernel_size = downsample_factor, stride = downsample_factor, padding = "same", key = keys[2]) 
+
+        self.final = nn.Conv1d(d_model, output_dim, final_kernel_size, padding = "same", key = keys[3])
+
+    def __call__(self, x):
+        _, L = x.shape
+        char_x, x = self.tokenizer(x)
+        x = self.transformer_stack(x)
+        print(x.shape)
+        x = x.transpose() # L x D -> D x L
+        x = self.up(x)[:,:L] + char_x.transpose() # is this guaranteed to come out length L or greater? 
+        x = jax.nn.relu(x) 
+        x = self.final(x) 
+        return x
+
+
+class Convformer(eqx.Module): 
+
+    tokenizer: eqx_modules.Conv1DLayer
+    transformer_stack: eqx_transformer.TransformerStack
+    up: nn.ConvTranspose1d
+    final: nn.Conv1d
+    downsample_factor: int 
+    causal: bool
+    pooler: nn.AvgPool1d
+    
+    def __init__(
+        self, 
+        input_dim, 
+        d_model, 
+        output_dim,
+        downsample_factor, 
+        n_heads, 
+        d_ff, 
+        kernel_size, 
+        key, 
+        causal = False, 
+        gated = False,
+        num_layers = 3, 
+        final_kernel_size = 7
+    ): 
+        super().__init__()
+        keys = jr.split(key, 4)
+        self.downsample_factor = downsample_factor
+        self.causal = causal
+
+        padding = ((kernel_size-1, 0),) if causal else "SAME"
+        # a generalization of this would have multiple conv layers here
+        self.tokenizer = eqx_modules.Conv1DLayer(
+            input_dim,
+            d_model,
+            kernel_size = kernel_size,
+            padding = padding, 
+            gated = gated, 
+            key = keys[0]
+        )
+        self.pooler = nn.AvgPool1d( 
+            downsample_factor,
+            downsample_factor, 
+            use_ceil = True
+        )
+            
+        self.transformer_stack = eqx_transformer.TransformerStack(
+            num_layers = num_layers, 
+            d_model = d_model, 
+            n_heads = n_heads, 
+            d_ff = d_ff,
+            causal = causal, 
+            key = keys[1]
+        )
+
+        self.up = nn.ConvTranspose1d(d_model, d_model, kernel_size = downsample_factor, stride = downsample_factor, padding = "same", key = keys[2]) 
+
+        # a generalization of this would have multiple conv layers here
+        padding = ((final_kernel_size-1, 0),) if causal else "SAME"
+        self.final = nn.Conv1d(d_model, output_dim, final_kernel_size, padding = padding, key = keys[3])
+
+    def __call__(self, x):
+        _, L = x.shape
+        char_x = self.tokenizer(x)
+        x = self.pooler(char_x)
+        x = x.transpose() # D x L -> L x D
+        x = self.transformer_stack(x)
+        x = x.transpose() # L x D -> D x L
+        x = self.up(x)
+        if self.causal: 
+            x = jnp.pad(x, ((0,0),(self.downsample_factor-1,0)))
+        x = x[:,:L] + char_x # is this guaranteed to come out length L or greater? 
+        x = jax.nn.relu(x) 
+        x = self.final(x) 
+        return x
+
+class Charformer(eqx.Module): 
+
+    tokenizer: gbst_jax.GBST
+    transformer_stack: eqx_transformer.TransformerStack
+    up: nn.ConvTranspose1d
+    final: nn.Conv1d
+    
+    def __init__(
+        self, 
+        input_dim, 
+        d_model, 
+        output_dim,
+        downsample_factor, 
+        n_heads, 
+        d_ff, 
+        key, 
+        max_block_size = None, 
+        blocks = None, 
+        num_layers = 3, 
+        final_kernel_size = 7
+    ): 
+        super().__init__()
+        keys = jr.split(key, 4)
+
+        self.tokenizer = gbst_jax.GBST(
+            input_dim = input_dim,
+            d_model = d_model,                    # dimension of token and intra-block positional embedding
+            max_block_size = max_block_size,           # maximum block size
+            blocks = blocks,
+            downsample_factor = downsample_factor,        # the final downsample factor by which the sequence length will decrease by
+            key = keys[0]
+        )
+        self.transformer_stack = eqx_transformer.TransformerStack(
+            num_layers = num_layers, 
+            d_model = d_model, 
+            n_heads = n_heads, 
+            d_ff = d_ff,
+            key = keys[1]
+        )
+
+        self.up = nn.ConvTranspose1d(d_model, d_model, kernel_size = downsample_factor, stride = downsample_factor, padding = "same", key = keys[2]) 
+
+        self.final = nn.Conv1d(d_model, output_dim, final_kernel_size, padding = "same", key = keys[3])
+
+    def __call__(self, x):
+        _, L = x.shape
+        char_x, x = self.tokenizer(x)
+        x = self.transformer_stack(x)
+        print(x.shape)
+        x = x.transpose() # L x D -> D x L
+        x = self.up(x)[:,:L] + char_x.transpose() # is this guaranteed to come out length L or greater? 
+        x = jax.nn.relu(x) 
+        x = self.final(x) 
+        return x
 
 #@eqx.filter_value_and_grad
 def compute_loss(model, data):
@@ -61,7 +249,9 @@ def train_step(model, opt_state, data, rep_sharding = None):
 
     return loss, model, opt_state
 
-def loop(dataloader, model, rep_sharding, opt_state = None): 
+def loop(dataloader, model, rep_sharding, opt_state = None, print_every = 10): 
+
+    start_time = time.time()
     
     losses = []
     tracker = RateTracker()
@@ -88,18 +278,83 @@ def loop(dataloader, model, rep_sharding, opt_state = None):
         losses.append(loss)
 
         tracker.add(batch_size)
-        
-        if step % 500 == 0: 
+
+        elapsed = time.time() - start_time
+        if elapsed > print_every: 
+            start_time = time.time()
             print(f"Epoch:{epoch} step:{step}, loss:{loss} rate:{tracker.rate()}")
     
     epoch_loss = np.mean(losses)
     return model, opt_state, epoch_loss
 
 sequence_len = 1024
-batch_size = 256
+
 num_workers = 50
 
-bed_data, genome_dict = epigenome_data.load_data(["GRCg6a"], width = sequence_len) # ["GRCg6a"]
+
+if MODEL == "Conv": 
+    batch_size = 1024 
+    # fully convolutional network, no transformers or similar so limited receptive field
+    model = eqx_modules.FullyConvSeq2Seq(
+        in_channels = 4, 
+        hidden_channels = 128, 
+        out_channels = 4, 
+        num_layers = 5, 
+        kernel_size = 7, 
+        gated = True,
+        causal = not MLM,
+        key = jr.PRNGKey(0)
+    )
+elif MODEL == "Transformer": 
+    batch_size = 128
+    # convolutional input and output layers, and transformer (with RoPE) stack inbetween _at full nucleotide resolution_ which is likely inefficient computationally and not a great modeling choice either (no tokenization, explicit or implicit) 
+    model = eqx_modules.Transformer(
+        in_channels = 4,
+        out_channels = 4,
+        kernel_size = 7, 
+        num_layers = 6, 
+        n_heads = 4, 
+        d_model = 128, 
+        d_ff = 64, 
+        causal = not MLM,
+        key = jr.PRNGKey(0)
+    )
+elif MODEL == "Charformer": 
+    batch_size = 1024 
+    # Not having a causal version seems like the biggest weakness to me. 
+    assert(MLM)
+    model = Charformer(
+        input_dim = 4,
+        d_model = 128, 
+        output_dim = 4,
+        blocks = ((1,0),(3,0),(5,0)),
+        downsample_factor = 5, 
+        num_layers = 6, 
+        n_heads = 4, 
+        d_ff = 64, 
+        key = jr.PRNGKey(0)
+    )
+elif MODEL == "Convformer": 
+    batch_size = 1024 
+    model = Convformer(
+        input_dim = 4,
+        output_dim = 4,
+        d_model = 128, 
+        downsample_factor = 5, 
+        n_heads = 4, 
+        d_ff = 64, 
+        kernel_size = 7, 
+        causal = not MLM,
+        gated = False,
+        num_layers = 6, 
+        final_kernel_size = 7,
+        key = jr.PRNGKey(0)
+    )
+else: 
+    raise ValueError(f"Unknown model {MODEL}")
+    
+
+#bed_data, genome_dict = epigenome_data.load_data(["GRCg6a"], width = sequence_len) # ["GRCg6a"]
 
 chrom1 = bed_data["chrom"] == "1"
 
@@ -127,29 +382,7 @@ test_dataloader = jdl.DataLoader(
     num_workers = num_workers
 ) # type: ignore
 
-if CONV: 
-    model = eqx_modules.FullyConvSeq2Seq(
-        in_channels = 4, 
-        hidden_channels = 128, 
-        out_channels = 4, 
-        num_layers = 5, 
-        kernel_size = 7, 
-        gated = True,
-        causal = not MLM,
-        key = jr.PRNGKey(0)
-    )
-else: 
-    model = eqx_modules.Transformer(
-        in_channels = 4,
-        out_channels = 4,
-        kernel_size = 7, 
-        num_layers = 12, 
-        n_heads = 4, 
-        d_model = 128, 
-        d_ff = 64, 
-        causal = not MLM,
-        key = jr.PRNGKey(0)
-    )
+
 num_devices = len(jax.devices())
 devices = mesh_utils.create_device_mesh((num_devices,1))
 sharding = jshard.PositionalSharding(devices)
@@ -161,7 +394,8 @@ model = eqx.filter_shard(model, rep_sharding)
 optim = optax.adam(learning_rate = 3e-3)
 opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
-results_dir = Path("charformer_jax_results/transformer")
+label = "MLM" if MLM else "LM"
+results_dir = Path(f"charformer_jax_results/{MODEL}_{label}")
 results_dir.mkdir(exist_ok = True, parents = True)
 
 train_losses = []
@@ -181,5 +415,14 @@ for epoch in range(50):
     epoch_time = time.time() - start_time
     print(f"Epoch:{epoch} train_loss:{train_loss:.5} test_loss:{test_loss:.5} took {epoch_time:.2}s")
 
-    eqx.tree_serialise_leaves(results_dir / "charformer_jax.pkl", model)
+    eqx.tree_serialise_leaves(results_dir / "checkpoint.pkl", model)
     pd.DataFrame({"train_loss": train_losses, "test_loss" : test_losses}).to_csv(results_dir / "metrics.tsv", sep = "\t", index = False)
+
+import matplotlib.pyplot as plt
+metrics = pd.read_csv(results_dir / "metrics.tsv", sep="\t")
+
+plt.plot(metrics["train_loss"], label = "train")
+plt.plot(metrics["test_loss"], label = "test")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.legend()

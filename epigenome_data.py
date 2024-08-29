@@ -98,7 +98,7 @@ class BedDataset(torch.utils.data.Dataset):
 
         if self.mask: 
             one_hot_masked = np.copy(one_hot_enc)
-            mask = transcript_data.get_mask_np_efficient(one_hot_enc) 
+            mask = transcript_data.get_mask_np_efficient(one_hot_masked) 
             to_return += [ one_hot_masked, mask ]
         
         return to_return

@@ -17,18 +17,6 @@ def lcm(*numbers):
     """least common multiple"""
     return int(functools.reduce(lambda x, y: int((x * y) / gcd(x, y)), numbers, 1))
 
-def masked_mean(tensor, mask, dim = -1):
-    """This will be inefficient on TPU, but is only relevant if masking"""
-
-    diff_len = len(tensor.shape) - len(mask.shape)
-    mask = mask[(..., *((None,) * diff_len))]
-    tensor.masked_fill_(~mask, 0.)
-
-    total_el = mask.sum(dim = dim)
-    mean = tensor.sum(dim = dim) / total_el.clamp(min = 1.)
-    mean.masked_fill_(total_el == 0, 0.)
-    return mean
-
 def next_divisible_length(seqlen, multiple):
     return math.ceil(seqlen / multiple) * multiple
 
@@ -48,8 +36,7 @@ class GBST(nn.Module):
         d_model, # model dimension
         max_block_size = None,
         blocks = None,
-        downsample_factor = 4,
-        score_consensus_attn = True
+        downsample_factor = 4
     ):
         """Deviating from the paper, you can also specify block size(s) with different offsets. This is to cover a potential use-case for genomics pre-training, where the tokenizer should be able to learn the correct frame. Simply omit the max_block_size, and pass in blocks as a list of tuples of tuples, each tuple with the format (block size, offset). Offsets must be less than the block size"""
         super().__init__()
@@ -83,8 +70,7 @@ class GBST(nn.Module):
     def forward(self, x, mask = None, L = None):
         """x is B x D x L"""
 
-        if L is None: 
-            L = x.shape[2] # try to avoid this on TPU
+        L = x.shape[2] # try to avoid this on TPU
 
         # do a conv to generate the positions for the tokens
         x = self.pos_conv(x) # still B x L x D

@@ -81,7 +81,16 @@ class TransformerBlock(eqx.Module):
 class TransformerStack(eqx.Module):
     blocks: list
 
-    def __init__(self, num_layers, n_heads, d_model, d_ff, *, key, causal = False):
+    def __init__(
+        self, 
+        num_layers, 
+        n_heads, 
+        d_model, 
+        d_ff, 
+        *, 
+        key, 
+        causal = False
+    ):
         keys = jax.random.split(key, num_layers)
         self.blocks = [TransformerBlock(n_heads, d_model, d_ff, key=k, causal = causal) for k in keys]
 
@@ -97,7 +106,7 @@ if __name__=="__main__":
     n_heads = 12       # Number of attention heads (BERT-base has 12)
     d_ff = 3072        # Size of the feedforward layer (BERT-base has 3072)
     seq_length = 1024   # Sequence length
-    batch_size = 512    # Batch size
+    batch_size = 128    # Batch size
     
     # Random key for initialization
     key = jax.random.PRNGKey(0)
