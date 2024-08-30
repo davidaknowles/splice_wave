@@ -26,6 +26,8 @@ parser = argparse.ArgumentParser()
 
 parser.add_argument('model', type=str, help='Conv, Charformer, Transformer or Convformer')
 
+parser.add_argument('-g', '--genome_set', type=str, default = "all", help="all, small or a specific genome")
+
 parser.add_argument('-m', '--mlm', action='store_true', help='Masked language modeling rather than autoregressive')
 
 args = parser.parse_args()
@@ -356,8 +358,14 @@ elif args.model == "Convformer":
     )
 else: 
     raise ValueError(f"Unknown model {args.model}")
-    
-bed_data, genome_dict = epigenome_data.load_data(None, width = sequence_len) # ["GRCg6a"]
+
+if args.genome_set == "all": 
+    genome_set = None
+elif args.genome_set == "small":
+    genome_set = ["galGal5", "Xenopus_tropicalis_v9.1", "ARS1", "GRCm38", "GRCg6a"]
+else: 
+    genome_set = [args.genome_set] # this should be a single genome, e.g. GRCg6a
+bed_data, genome_dict = epigenome_data.load_data(genome_set, width = sequence_len) # ["GRCg6a"]
 
 chrom1 = bed_data["chrom"] == "1"
 
@@ -397,8 +405,8 @@ model = eqx.filter_shard(model, rep_sharding)
 optim = optax.adam(learning_rate = 3e-3)
 opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
-label = "args.mlm" if args.mlm else "LM"
-results_dir = Path(f"jax_results/{args.model}_{label}")
+label = "MLM" if args.mlm else "LM"
+results_dir = Path(f"jax_results/{args.model}_{label}_{args.genome_set}")
 results_dir.mkdir(exist_ok = True, parents = True)
 
 train_losses = []
