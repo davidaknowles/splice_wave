@@ -30,6 +30,7 @@ parser.add_argument('-g', '--genome_set', type=str, default = "all", help="all, 
 
 parser.add_argument('-m', '--mlm', action='store_true', help='Masked language modeling rather than autoregressive')
 
+#args = parser.parse_args(['Mamba','-m','-g','GRCg6a'])
 args = parser.parse_args()
 
 #@eqx.filter_value_and_grad
@@ -172,14 +173,15 @@ elif args.model == "Convformer":
         key = jr.PRNGKey(0)
     )
 elif args.model == "Mamba": 
-    if MLM: 
+    batch_size = 64
+    if args.mlm: 
         print("Warning: Mamba is an odd choice for MLM, bidirectional Mamba would make more sense")
     model = mamba_jax.Mamba(
         in_channels = 4,
         out_channels = 4, 
         kernel_size = 7, 
-        num_layers = 6,
-        d_model = 128,
+        num_layers = 4,
+        d_model = 64,
         key = jr.PRNGKey(0)
     )
 else: 
@@ -191,7 +193,7 @@ elif args.genome_set == "small":
     genome_set = ["galGal5", "Xenopus_tropicalis_v9.1", "ARS1", "GRCm38", "GRCg6a"]
 else: 
     genome_set = [args.genome_set] # this should be a single genome, e.g. GRCg6a
-bed_data, genome_dict = epigenome_data.load_data(genome_set, width = sequence_len) # ["GRCg6a"]
+#bed_data, genome_dict = epigenome_data.load_data(genome_set, width = sequence_len) # ["GRCg6a"]
 
 chrom1 = bed_data["chrom"] == "1"
 
