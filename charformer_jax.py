@@ -20,8 +20,15 @@ import eqx_transformer
 import gbst_jax
 import equinox.nn as nn
 
-MLM = True
-MODEL = 'Charformer'
+import argparse
+
+parser = argparse.ArgumentParser()
+
+parser.add_argument('model', type=str, help='Conv, Charformer, Transformer or Convformer')
+
+parser.add_argument('-m', '--mlm', action='store_true', help='Masked language modeling rather than autoregressive')
+
+args = parser.parse_args()
 
 class Charformer(eqx.Module): 
 
@@ -71,7 +78,6 @@ class Charformer(eqx.Module):
         _, L = x.shape
         char_x, x = self.tokenizer(x)
         x = self.transformer_stack(x)
-        print(x.shape)
         x = x.transpose() # L x D -> D x L
         x = self.up(x)[:,:L] + char_x.transpose() # is this guaranteed to come out length L or greater? 
         x = jax.nn.relu(x) 
@@ -203,7 +209,6 @@ class Charformer(eqx.Module):
         _, L = x.shape
         char_x, x = self.tokenizer(x)
         x = self.transformer_stack(x)
-        print(x.shape)
         x = x.transpose() # L x D -> D x L
         x = self.up(x)[:,:L] + char_x.transpose() # is this guaranteed to come out length L or greater? 
         x = jax.nn.relu(x) 
@@ -212,14 +217,14 @@ class Charformer(eqx.Module):
 
 #@eqx.filter_value_and_grad
 def compute_loss(model, data):
-    if MLM: 
+    if args.mlm: 
         one_hot_T, x, mask = data
     else: 
         x = data
     output = jax.vmap(model)(x)
     out_norm = output - logsumexp(output, axis=1, keepdims=True)
     #seq_mask = mask[:, None, 1:].astype(jnp.float32) # could just sum one_hot_masked_T instead
-    if MLM: 
+    if args.mlm: 
         seq_mask = mask[:, None, :].astype(jnp.float32) 
         loss = - (seq_mask * one_hot_T * out_norm).sum() / (seq_mask.sum() + 1e-8)
     else: 
@@ -257,7 +262,7 @@ def loop(dataloader, model, rep_sharding, opt_state = None, print_every = 10):
     tracker = RateTracker()
     
     for step, batch in enumerate(dataloader):
-        if MLM: 
+        if args.mlm: 
             species, tissue, assay, one_hot, one_hot_masked, mask = batch
             one_hot_masked_T = np.swapaxes(one_hot_masked, 1, 2)
             one_hot_T = np.swapaxes(one_hot, 1, 2)
@@ -291,8 +296,7 @@ sequence_len = 1024
 
 num_workers = 50
 
-
-if MODEL == "Conv": 
+if args.model == "Conv": 
     batch_size = 1024 
     # fully convolutional network, no transformers or similar so limited receptive field
     model = eqx_modules.FullyConvSeq2Seq(
@@ -302,10 +306,10 @@ if MODEL == "Conv":
         num_layers = 5, 
         kernel_size = 7, 
         gated = True,
-        causal = not MLM,
+        causal = not args.mlm,
         key = jr.PRNGKey(0)
     )
-elif MODEL == "Transformer": 
+elif args.model == "Transformer": 
     batch_size = 128
     # convolutional input and output layers, and transformer (with RoPE) stack inbetween _at full nucleotide resolution_ which is likely inefficient computationally and not a great modeling choice either (no tokenization, explicit or implicit) 
     model = eqx_modules.Transformer(
@@ -316,13 +320,13 @@ elif MODEL == "Transformer":
         n_heads = 4, 
         d_model = 128, 
         d_ff = 64, 
-        causal = not MLM,
+        causal = not args.mlm,
         key = jr.PRNGKey(0)
     )
-elif MODEL == "Charformer": 
+elif args.model == "Charformer": 
     batch_size = 1024 
     # Not having a causal version seems like the biggest weakness to me. 
-    assert(MLM)
+    assert(args.mlm)
     model = Charformer(
         input_dim = 4,
         d_model = 128, 
@@ -334,7 +338,7 @@ elif MODEL == "Charformer":
         d_ff = 64, 
         key = jr.PRNGKey(0)
     )
-elif MODEL == "Convformer": 
+elif args.model == "Convformer": 
     batch_size = 1024 
     model = Convformer(
         input_dim = 4,
@@ -344,25 +348,24 @@ elif MODEL == "Convformer":
         n_heads = 4, 
         d_ff = 64, 
         kernel_size = 7, 
-        causal = not MLM,
+        causal = not args.mlm,
         gated = False,
         num_layers = 6, 
         final_kernel_size = 7,
         key = jr.PRNGKey(0)
     )
 else: 
-    raise ValueError(f"Unknown model {MODEL}")
+    raise ValueError(f"Unknown model {args.model}")
     
-
-#bed_data, genome_dict = epigenome_data.load_data(["GRCg6a"], width = sequence_len) # ["GRCg6a"]
+bed_data, genome_dict = epigenome_data.load_data(None, width = sequence_len) # ["GRCg6a"]
 
 chrom1 = bed_data["chrom"] == "1"
 
 train_data = bed_data[ ~chrom1 ]
 test_data = bed_data[ chrom1 ]
 
-train_dataset = epigenome_data.BedDataset(train_data, genome_dict, width = sequence_len, mask = MLM) 
-test_dataset = epigenome_data.BedDataset(test_data, genome_dict, width = sequence_len, mask = MLM) 
+train_dataset = epigenome_data.BedDataset(train_data, genome_dict, width = sequence_len, mask = args.mlm) 
+test_dataset = epigenome_data.BedDataset(test_data, genome_dict, width = sequence_len, mask = args.mlm) 
 
 train_dataloader = jdl.DataLoader(
     train_dataset, # Can be a jdl.Dataset or pytorch or huggingface or tensorflow dataset
@@ -394,8 +397,8 @@ model = eqx.filter_shard(model, rep_sharding)
 optim = optax.adam(learning_rate = 3e-3)
 opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
-label = "MLM" if MLM else "LM"
-results_dir = Path(f"charformer_jax_results/{MODEL}_{label}")
+label = "args.mlm" if args.mlm else "LM"
+results_dir = Path(f"jax_results/{args.model}_{label}")
 results_dir.mkdir(exist_ok = True, parents = True)
 
 train_losses = []
