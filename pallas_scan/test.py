@@ -8,8 +8,8 @@ import complex_lib
 import pallas
 
 def lru_linear_scan(
-    x,
-    a,
+    x, # B x L x ...
+    a, # B x L x ...
     h0=None,
     reverse=False,
     return_a_prod=False,

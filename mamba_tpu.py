@@ -5,7 +5,10 @@ import equinox.nn as nn
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int, PRNGKeyArray
-
+import pallas_scan.pallas as plscan
+from jax.experimental import shard_map
+import einops
+from jax.sharding import Mesh, PartitionSpec as P
 
 def native_scan(x, a, h0 = None): 
     if h0 is None: 
@@ -20,14 +23,27 @@ def native_scan(x, a, h0 = None):
     # h : L x ED x N
     return h, h_last
 
+def associative_scan(x, a, h0 = None):
+    
+    def _associative_scan_fn(s, c):
+        return tuple((c[0] * s[0], c[0] * s[1] + c[1]))
+    # [a, fn(a, b), fn(fn(a, b), c), ...].
+    # 0: (a0,x0) -> (a
+    # 1: (a0*a1, a[1]*h[0]+x[1])
+    # fn(a,b) = (h1,x1) = (a1*h0+x1,x1)
+    _, h = jax.lax.associative_scan(_associative_scan_fn, (a, x))
+    return h, h[-1]
+
 def selective_scan(
-    x: Float[Array, "seq_length d_inner"],
-    delta: Float[Array, "seq_length d_inner"],
-    A: Float[Array, "d_inner d_state"],
-    B: Float[Array, "seq_length d_state"],
-    C: Float[Array, "seq_length d_state"],
-    D: Float[Array, " d_inner"],
-) -> Float[Array, "seq_length d_inner"]:
+    x: Float[Array, "batch seq_length d_inner"],
+    delta: Float[Array, "batch seq_length d_inner"],
+    A: Float[Array, "d_inner d_state"], # no batch dimension
+    B: Float[Array, "batch seq_length d_state"],
+    C: Float[Array, "batch seq_length d_state"],
+    D: Float[Array, " d_inner"], # no batch dimension
+    shard_map_kwargs = None, 
+    native = False
+) -> Float[Array, "batch seq_length d_inner"]:
     # from mambapy
     # ED = expand * d_model = d_inner
     # B = batch size
@@ -42,17 +58,29 @@ def selective_scan(
 
     # y : (B, L, ED)
 
-    L, d_inner = x.shape
+    _, L, d_inner = x.shape
     _, d_state = A.shape
 
     # there's no sum here? it's just a multiply
-    #delta_A = jnp.exp(jnp.einsum("l d,d n -> l d n", delta, A))
+    #delta_A = jnp.exp(jnp.einsum("b l d,d n -> b l d n", delta, A))
     delta_A = jnp.exp(delta[..., None] * A) # delta_A is L x ED x N
     # again not an actual sum! 
-    #delta_B_x = jnp.einsum("l d,l n,l d -> l d n", delta, B, x) # L x ED x N)
-    delta_B_x = delta[..., None] * B[:, None, :] * x[:, :, None]
-    
-    h, _ = native_scan(delta_B_x, delta_A)
+    #delta_B_x = jnp.einsum("b l d,b l n,b l d -> b l d n", delta, B, x) # L x ED x N)
+    delta_B_x = delta[..., None] * B[:, :, None, :] * x[:, :, :, None]
+
+    if native: 
+        h, _ = jax.vmap(native_scan)(delta_B_x, delta_A)
+        #h, _ = jax.vmap(associative_scan)(delta_B_x, delta_A) # even slower! 
+    else:
+        if shard_map_kwargs is None: 
+            f = plscan.lru_pallas_scan
+        else: 
+            f = shard_map.shard_map(plscan.lru_pallas_scan, **shard_map_kwargs)
+        h, _ = f(
+            einops.rearrange(delta_B_x, 'b l d n -> b l (d n)'),
+            einops.rearrange(delta_A, 'b l d n -> b l (d n)')
+        )
+        h = einops.rearrange(h, 'b l (d n) -> b l d n', d=d_inner, n=d_state)
     
     ys = (h @ C[..., None]).squeeze(-1) # ys = jnp.einsum("l d n,l n -> l d", h, C) 
     ys = ys + x * D
@@ -69,6 +97,8 @@ class SelectiveStateSpaceModel(eqx.Module):
     dt_rank: int = eqx.field(static=True)
     d_state: int = eqx.field(static=True)
 
+    shard_map_kwargs: dict | None
+
     def __init__(
         self,
         d_inner: int,
@@ -81,12 +111,14 @@ class SelectiveStateSpaceModel(eqx.Module):
         dt_init="random",
         dt_scale=1.0,
         dt_init_floor=1e-4,
+        shard_map_kwargs = None, 
         *,
         key: PRNGKeyArray,
     ):
         self.d_inner = d_inner
         self.dt_rank = dt_rank
         self.d_state = d_state
+        self.shard_map_kwargs = shard_map_kwargs
         
         key, input_proj_key,  delta_proj_key = jax.random.split(key, 3)
         
@@ -128,11 +160,11 @@ class SelectiveStateSpaceModel(eqx.Module):
         self.A_log = jnp.log(A)
         self.D = jnp.ones(d_inner) # og mamba sets D._no_weight_decay = True
 
-    def __call__(self, x: Float[Array, "seq_length d_inner"]):
+    def __call__(self, x: Float[Array, "batch seq_length d_inner"]):
         A = -jnp.exp(self.A_log)
         D = self.D
 
-        delta_b_c = jax.vmap(self.input_proj)(x) 
+        delta_b_c = jax.vmap(jax.vmap(self.input_proj))(x) 
 
         split_indices = [
             self.dt_rank,
@@ -141,14 +173,15 @@ class SelectiveStateSpaceModel(eqx.Module):
 
         # outputs will be seq_length x dt_rank, seq_length x d_state
         delta, B, C = jnp.split(delta_b_c, split_indices, axis=-1) # layerNorm these? 
-        delta = jax.nn.softplus(jax.vmap(self.dt_proj)(delta))
+        delta = jax.nn.softplus(jax.vmap(jax.vmap(self.dt_proj))(delta))
 
-        y = selective_scan(x, delta, A, B, C, D)
+        #y = jax.vmap(partial(selective_scan, A=A, D=D))(x = x, delta = delta, B = B, C = C)
+        y = selective_scan(x, delta, A, B, C, D, shard_map_kwargs = self.shard_map_kwargs)
         return y
 
 class MambaBlock(eqx.Module):
     in_proj: nn.Linear
-    conv1d: nn.Conv1d
+    conv1d: nn.Sequential
     ssm: SelectiveStateSpaceModel
     out_proj: nn.Linear
 
@@ -163,6 +196,7 @@ class MambaBlock(eqx.Module):
         use_out_proj_bias: bool = True,
         ssm_use_delta_proj_bias: bool = False,
         ssm_use_input_proj_bias: bool = False,
+        shard_map_kwargs = None,
         *,
         key: PRNGKeyArray,
     ):
@@ -184,21 +218,26 @@ class MambaBlock(eqx.Module):
             key=linear_key,
         )
 
-        self.conv1d = nn.Conv1d( # all same as og mamba
-            in_channels=d_inner,
-            out_channels=d_inner,
-            kernel_size=d_conv,
-            use_bias=use_conv_bias,
-            groups=d_inner,
-            padding=d_conv - 1,
-            key=conv1d_key,
-        )
+        self.conv1d = nn.Sequential([
+            nn.Lambda(jnp.transpose),
+            nn.Conv1d( # all same as og mamba
+                in_channels=d_inner,
+                out_channels=d_inner,
+                kernel_size=d_conv,
+                use_bias=use_conv_bias,
+                groups=d_inner,
+                padding=d_conv - 1,
+                key=conv1d_key,
+            ),
+            nn.Lambda(jnp.transpose)
+        ])
         self.ssm = SelectiveStateSpaceModel(
             d_inner=d_inner,
             dt_rank=dt_rank,
             d_state=d_inner,
             use_delta_proj_bias=ssm_use_delta_proj_bias,
             use_input_proj_bias=ssm_use_input_proj_bias,
+            shard_map_kwargs = shard_map_kwargs, 
             key=ssm_key,
         )
         self.out_proj = nn.Linear(  # all same as og mamba
@@ -209,19 +248,18 @@ class MambaBlock(eqx.Module):
         )
 
     def __call__(self, x: Array):
-        seq_len, d = x.shape
-        x_and_res = jax.vmap(self.in_proj)(x)
+        B, seq_len, d = x.shape
+        x_and_res = jax.vmap(jax.vmap(self.in_proj))(x)
 
         (x, res) = jnp.split(x_and_res, 2, axis=-1)
-        x = jnp.transpose(x)
-        x = self.conv1d(x)[:, :seq_len]
-        x = jnp.transpose(x)
+        x = jax.vmap(self.conv1d)(x)[:, :seq_len, :]
+
         x = jax.nn.silu(x)
 
         y = self.ssm(x)
         y = y * jax.nn.silu(res)
 
-        output = jax.vmap(self.out_proj)(y)
+        output = jax.vmap(jax.vmap(self.out_proj))(y)
         return output
 
 
@@ -233,22 +271,24 @@ class ResidualBlock(eqx.Module):
         self,
         d_model: int,
         key : PRNGKeyArray, 
+        shard_map_kwargs = None,
         **kwargs
     ):
-        self.mamba_block = MambaBlock(d_model, key=key, **kwargs) 
+        self.mamba_block = MambaBlock(d_model, key=key, shard_map_kwargs = shard_map_kwargs, **kwargs) 
         self.rms_norm = nn.RMSNorm(d_model)
 
     def __call__(
-        self, x: Float[Array, "seq_len d_model"], *, key: Optional[PRNGKeyArray] = None
+        self, x: Float[Array, "batch seq_len d_model"], *, key: Optional[PRNGKeyArray] = None
     ) -> Array:
-        return self.mamba_block(jax.vmap(self.rms_norm)(x)) + x
+        h = jax.vmap(jax.vmap(self.rms_norm))(x)
+        return self.mamba_block(h) + x
 
 
 class Mamba(eqx.Module):
     mamba_stack: nn.Sequential
+    input_conv: nn.Sequential
+    output_conv: nn.Sequential
     normalization: nn.RMSNorm
-    input_conv: nn.Conv1d
-    output_conv: nn.Conv1d
     
     def __init__(
         self,
@@ -258,6 +298,7 @@ class Mamba(eqx.Module):
         num_layers,
         d_model, 
         key,
+        shard_map_kwargs = None, 
         **kwargs # expand = 2, dt_rank = None, d_conv = 4
     ):
         key, in_key, out_key, *subkeys = jax.random.split(key, num_layers + 3)
@@ -266,6 +307,7 @@ class Mamba(eqx.Module):
                 ResidualBlock(
                     d_model,
                     key=k,
+                    shard_map_kwargs = shard_map_kwargs, 
                     **kwargs
                 )
                 for k in subkeys
@@ -273,25 +315,29 @@ class Mamba(eqx.Module):
         )
         self.normalization = nn.RMSNorm(d_model)
         padding = ((kernel_size-1, 0),) # causal conv
-        self.input_conv = nn.Conv1d(
-            in_channels, d_model, kernel_size, padding = padding, key=in_key
-        )
-        self.output_conv = nn.Conv1d(d_model, out_channels, kernel_size, padding=padding, use_bias = False, key = out_key) # could try to tie in and out (and use convtranspose for out?)
+        self.input_conv = nn.Sequential([
+            nn.Conv1d(
+                in_channels, d_model, kernel_size, padding = padding, key=in_key
+                ),
+            nn.Lambda(jnp.transpose)
+        ])
+        self.output_conv = nn.Sequential([
+            nn.Lambda(jnp.transpose),
+            nn.Conv1d(d_model, out_channels, kernel_size, padding=padding, use_bias = False, key = out_key) # could try to tie in and out (and use convtranspose for out?)
+        ])
 
     def __call__(
         self,
-        x: Int[Array, "in_channels seq_len"],  # noqa
+        x: Int[Array, "batch in_channels seq_len"],  # noqa
         *,
         state: nn.State | None = None,
         key: Optional[PRNGKeyArray] = None,
-    ) -> Float[Array, "out_channels seq_len"]:  # noqa
+    ) -> Float[Array, "batch out_channels seq_len"]:  # noqa
         
-        x = self.input_conv(x)
-        x = jnp.transpose(x) 
+        x = jax.vmap(self.input_conv)(x)
         x = self.mamba_stack(x)
-        x = jax.vmap(self.normalization)(x)
-        x = jnp.transpose(x)
-        return self.output_conv(x)
+        x = jax.vmap(jax.vmap(self.normalization))(x)
+        return jax.vmap(self.output_conv)(x)
 
 if __name__=="__main__": 
 
@@ -308,11 +354,57 @@ if __name__=="__main__":
 
     batch_size = 16
     seq_length = 128
+
+    num_devices = len(jax.devices())
+    devices = mesh_utils.create_device_mesh((num_devices,1))
+    sharding = jshard.PositionalSharding(devices)
+    rep_sharding = sharding.replicate()
+    mesh = Mesh(devices, axis_names=('i', 'j'))
+
     
-    x = jax.random.normal(key, (4, seq_length))
-    output = model(x)
-    print(x.shape)
+    
+    shard_map_kwargs = {
+        "mesh" : mesh,
+        "in_specs" : (P("i",None,None),P("i",None,None)), 
+        "out_specs" : (P("i",None,None),P("i",None)),
+        "check_rep" : False
+    }
+    model = Mamba(
+        in_channels = 4,
+        out_channels = 4, 
+        kernel_size = 7, 
+        num_layers = 3,
+        d_model = d_model,
+        shard_map_kwargs = shard_map_kwargs,
+        key = key
+    )
 
     x = jax.random.normal(key, (batch_size, 4, seq_length))
-    output = jax.vmap(model)(x)
-    print(x.shape)
+    x_sharded = eqx.filter_shard(x, rep_sharding)
+    model_sharded = eqx.filter_shard(model, rep_sharding)
+    output = model_sharded(x_sharded)
+    print(output.shape)
+    
+    key = jax.random.PRNGKey(0)
+    seq_length = 200
+    d_model = 128
+    batch_size = 12
+    x = jax.random.normal(key, (batch_size, seq_length, d_model))
+    a = jax.random.normal(key, (batch_size, seq_length, d_model))
+
+    x_sharded, a_sharded = eqx.filter_shard((x,a), rep_sharding)
+
+    f = shard_map.shard_map(
+        plscan.lru_pallas_scan, 
+        mesh = mesh,
+        in_specs = (P("i",None,None),P("i",None,None)), 
+        out_specs = (P("i",None,None),P("i",None)),
+        check_rep = False
+    )
+    h, h_last = f(x_sharded, a_sharded) 
+    print(h.shape)
+
+    x = jax.random.normal(key, (seq_length, d_model))
+    a = jax.random.normal(key, (seq_length, d_model))
+    h, h_last = native_scan(x,a)
+    h_, h_last = associative_scan(x,a)

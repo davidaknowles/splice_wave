@@ -19,7 +19,7 @@ import types
 from typing import Any, Sequence, TypeVar
 
 import einops
-import flax_struct as struct
+from . import flax_struct as struct
 import jax
 import jax.experimental.pallas as pl
 import jax.numpy as jnp

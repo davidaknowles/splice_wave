@@ -22,7 +22,7 @@ from typing_extensions import (
   dataclass_transform,  # pytype: disable=not-supported-yet
 )
 
-import serialization
+from . import serialization
 
 _T = TypeVar('_T')
 
