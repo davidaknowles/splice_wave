@@ -31,8 +31,8 @@ parser.add_argument('-g', '--genome_set', type=str, default = "all", help="all, 
 
 parser.add_argument('-m', '--mlm', action='store_true', help='Masked language modeling rather than autoregressive')
 
-args = parser.parse_args(['Mamba','-m','-g','GRCg6a'])
-#args = parser.parse_args()
+#args = parser.parse_args(['Mamba','-m','-g','GRCg6a'])
+args = parser.parse_args()
 
 #@eqx.filter_value_and_grad
 def compute_loss(model, data):
@@ -215,7 +215,7 @@ elif args.genome_set == "small":
     genome_set = ["galGal5", "Xenopus_tropicalis_v9.1", "ARS1", "GRCm38", "GRCg6a"]
 else: 
     genome_set = [args.genome_set] # this should be a single genome, e.g. GRCg6a
-#bed_data, genome_dict = epigenome_data.load_data(genome_set, width = sequence_len) # ["GRCg6a"]
+bed_data, genome_dict = epigenome_data.load_data(genome_set, width = sequence_len) # ["GRCg6a"]
 
 chrom1 = bed_data["chrom"] == "1"
 
