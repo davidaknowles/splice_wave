@@ -21,7 +21,7 @@ import jax
 from jax._src.lax.control_flow import for_loop
 import jax.experimental.pallas as pl
 import jax.numpy as jnp
-import complex_lib
+from . import complex_lib
 
 
 T = TypeVar("T")

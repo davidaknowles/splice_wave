@@ -20,6 +20,7 @@ import eqx_transformer
 import charformer_jax
 import equinox.nn as nn
 import mamba_jax
+import mamba_tpu
 import argparse
 
 parser = argparse.ArgumentParser()
@@ -39,7 +40,8 @@ def compute_loss(model, data):
         one_hot_T, x, mask = data
     else: 
         x = data
-    output = jax.vmap(model)(x)
+    #output = jax.vmap(model)(x) # do this outside now to accommodate models like Mamba that aleady handle batch
+    output = model(x)
     out_norm = output - logsumexp(output, axis=1, keepdims=True)
     #seq_mask = mask[:, None, 1:].astype(jnp.float32) # could just sum one_hot_masked_T instead
     if args.mlm: 
@@ -72,7 +74,7 @@ def train_step(model, opt_state, data, rep_sharding = None):
 
     return loss, model, opt_state
 
-def loop(dataloader, model, rep_sharding, opt_state = None, print_every = 10): 
+def loop(dataloader, model, rep_sharding = None, opt_state = None, print_every = 10): 
 
     start_time = time.time()
     
@@ -88,8 +90,9 @@ def loop(dataloader, model, rep_sharding, opt_state = None, print_every = 10):
         else: 
             species, tissue, assay, one_hot = batch
             data = np.swapaxes(one_hot, 1, 2)
-    
-        data = eqx.filter_shard(data, rep_sharding)
+
+        if rep_sharding is not None: 
+            data = eqx.filter_shard(data, rep_sharding)
 
         if opt_state is None: 
             loss = evaluate(model, data, rep_sharding)
@@ -114,6 +117,12 @@ sequence_len = 1024
 
 num_workers = 50
 
+num_devices = len(jax.devices())
+devices = mesh_utils.create_device_mesh((num_devices,1))
+sharding = jshard.PositionalSharding(devices)
+rep_sharding = sharding.replicate()
+
+
 if args.model == "Conv": 
     batch_size = 1024 
     # fully convolutional network, no transformers or similar so limited receptive field
@@ -127,6 +136,7 @@ if args.model == "Conv":
         causal = not args.mlm,
         key = jr.PRNGKey(0)
     )
+    model = jax.vmap(model)
 elif args.model == "Transformer": 
     batch_size = 128
     # convolutional input and output layers, and transformer (with RoPE) stack inbetween _at full nucleotide resolution_ which is likely inefficient computationally and not a great modeling choice either (no tokenization, explicit or implicit) 
@@ -141,6 +151,7 @@ elif args.model == "Transformer":
         causal = not args.mlm,
         key = jr.PRNGKey(0)
     )
+    model = jax.vmap(model)
 elif args.model == "Charformer": 
     batch_size = 1024 
     # Not having a causal version seems like the biggest weakness to me. 
@@ -156,6 +167,7 @@ elif args.model == "Charformer":
         d_ff = 64, 
         key = jr.PRNGKey(0)
     )
+    model = jax.vmap(model)
 elif args.model == "Convformer": 
     batch_size = 1024 
     model = charformer_jax.Convformer(
@@ -172,16 +184,26 @@ elif args.model == "Convformer":
         final_kernel_size = 7,
         key = jr.PRNGKey(0)
     )
+    model = jax.vmap(model)
 elif args.model == "Mamba": 
-    batch_size = 64
+    batch_size = 128 # 128 with pallas, 32 native scan (about 8x slower), 16 with associative scan and SUPER slow
+    from jax.sharding import Mesh, PartitionSpec as P
+    mesh = Mesh(devices, axis_names=('i', 'j')) # 4x1 so no point using j? 
+    shard_map_kwargs = {
+        "mesh" : mesh,
+        "in_specs" : (P("i",None,None),P("i",None,None)), 
+        "out_specs" : (P("i",None,None),P("i",None)),
+        "check_rep" : False
+    }
     if args.mlm: 
         print("Warning: Mamba is an odd choice for MLM, bidirectional Mamba would make more sense")
-    model = mamba_jax.Mamba(
+    model = mamba_tpu.Mamba(
         in_channels = 4,
         out_channels = 4, 
         kernel_size = 7, 
-        num_layers = 4,
-        d_model = 64,
+        num_layers = 6, 
+        d_model = 32, # really slow if we make this bigger since SSM state is 2*d_model^2
+        shard_map_kwargs = shard_map_kwargs,
         key = jr.PRNGKey(0)
     )
 else: 
@@ -193,7 +215,7 @@ elif args.genome_set == "small":
     genome_set = ["galGal5", "Xenopus_tropicalis_v9.1", "ARS1", "GRCm38", "GRCg6a"]
 else: 
     genome_set = [args.genome_set] # this should be a single genome, e.g. GRCg6a
-#bed_data, genome_dict = epigenome_data.load_data(genome_set, width = sequence_len) # ["GRCg6a"]
+bed_data, genome_dict = epigenome_data.load_data(genome_set, width = sequence_len) # ["GRCg6a"]
 
 chrom1 = bed_data["chrom"] == "1"
 
@@ -220,13 +242,6 @@ test_dataloader = jdl.DataLoader(
     drop_last=True, # Drop the last batch or not
     num_workers = num_workers
 ) # type: ignore
-
-
-num_devices = len(jax.devices())
-devices = mesh_utils.create_device_mesh((num_devices,1))
-sharding = jshard.PositionalSharding(devices)
-
-rep_sharding = sharding.replicate()
 
 model = eqx.filter_shard(model, rep_sharding)
 
@@ -258,6 +273,8 @@ for epoch in range(50):
     pd.DataFrame({"train_loss": train_losses, "test_loss" : test_losses}).to_csv(results_dir / "metrics.tsv", sep = "\t", index = False)
 
 import matplotlib.pyplot as plt
+import pandas as pd
+from pathlib import Path
 
 basedir = Path("jax_results")
 for results_dir in basedir.glob("*"): 
