@@ -21,6 +21,7 @@ import charformer_jax
 import equinox.nn as nn
 import mamba_jax
 import mamba_tpu
+import wiki_data
 import argparse
 
 parser = argparse.ArgumentParser()
@@ -31,7 +32,7 @@ parser.add_argument('-g', '--genome_set', type=str, default = "all", help="all, 
 
 parser.add_argument('-m', '--mlm', action='store_true', help='Masked language modeling rather than autoregressive')
 
-#args = parser.parse_args(['Mamba','-m','-g','GRCg6a'])
+#args = parser.parse_args(['Mamba','-g','wiki'])
 args = parser.parse_args()
 
 print(args)
@@ -124,14 +125,15 @@ devices = mesh_utils.create_device_mesh((num_devices,1))
 sharding = jshard.PositionalSharding(devices)
 rep_sharding = sharding.replicate()
 
+n_channels = 42 if args.genome_set == "wiki" else 4
 
 if args.model == "Conv": 
     batch_size = 1024 
     # fully convolutional network, no transformers or similar so limited receptive field
     model = eqx_modules.FullyConvSeq2Seq(
-        in_channels = 4, 
+        in_channels = n_channels, 
         hidden_channels = 128, 
-        out_channels = 4, 
+        out_channels = n_channels, 
         num_layers = 5, 
         kernel_size = 7, 
         gated = True,
@@ -143,8 +145,8 @@ elif args.model == "Transformer":
     batch_size = 128
     # convolutional input and output layers, and transformer (with RoPE) stack inbetween _at full nucleotide resolution_ which is likely inefficient computationally and not a great modeling choice either (no tokenization, explicit or implicit) 
     model = eqx_modules.Transformer(
-        in_channels = 4,
-        out_channels = 4,
+        in_channels = n_channels,
+        out_channels = n_channels,
         kernel_size = 7, 
         num_layers = 6, 
         n_heads = 4, 
@@ -159,9 +161,9 @@ elif args.model == "Charformer":
     # Not having a causal version seems like the biggest weakness to me. 
     assert(args.mlm)
     model = charformer_jax.Charformer(
-        input_dim = 4,
+        input_dim = n_channels,
         d_model = 128, 
-        output_dim = 4,
+        output_dim = n_channels,
         blocks = ((1,0),(3,0),(5,0)),
         downsample_factor = 5, 
         num_layers = 6, 
@@ -173,8 +175,8 @@ elif args.model == "Charformer":
 elif args.model == "Convformer": 
     batch_size = 1024 
     model = charformer_jax.Convformer(
-        input_dim = 4,
-        output_dim = 4,
+        input_dim = n_channels,
+        output_dim = n_channels,
         d_model = 128, 
         downsample_factor = 5, 
         n_heads = 4, 
@@ -200,8 +202,8 @@ elif args.model == "Mamba":
     if args.mlm: 
         print("Warning: Mamba is an odd choice for MLM, bidirectional Mamba would make more sense")
     model = mamba_tpu.Mamba(
-        in_channels = 4,
-        out_channels = 4, 
+        in_channels = n_channels,
+        out_channels = n_channels, 
         kernel_size = 7, 
         num_layers = 6, 
         d_model = 32, # really slow if we make this bigger since SSM state is 2*d_model^2
@@ -211,25 +213,33 @@ elif args.model == "Mamba":
 else: 
     raise ValueError(f"Unknown model {args.model}")
 
-if args.genome_set == "all": 
-    genome_set = None
-elif args.genome_set == "small":
-    genome_set = ["galGal5", "Xenopus_tropicalis_v9.1", "ARS1", "GRCm38", "GRCg6a"]
+if args.genome_set == "wiki": 
+    data = wiki_data.load_dataset("wikipedia", "20220301.en", split='train')
+
+    train_test_split = data.train_test_split(test_size=0.2)
+
+    train_dataset = wiki_data.WikiDataset(train_test_split['train'], mask = args.mlm)
+    test_dataset = wiki_data.WikiDataset(train_test_split['test'], mask = args.mlm)
 else: 
-    genome_set = [args.genome_set] # this should be a single genome, e.g. GRCg6a
-bed_data, genome_dict = epigenome_data.load_data(genome_set, width = sequence_len) # ["GRCg6a"]
-
-chrom1 = bed_data["chrom"] == "1"
-
-train_data = bed_data[ ~chrom1 ]
-test_data = bed_data[ chrom1 ]
-
-train_dataset = epigenome_data.BedDataset(train_data, genome_dict, width = sequence_len, mask = args.mlm) 
-test_dataset = epigenome_data.BedDataset(test_data, genome_dict, width = sequence_len, mask = args.mlm) 
+    if args.genome_set == "all": 
+        genome_set = None
+    elif args.genome_set == "small":
+        genome_set = ["galGal5", "Xenopus_tropicalis_v9.1", "ARS1", "GRCm38", "GRCg6a"]
+    else: 
+        genome_set = [args.genome_set] # this should be a single genome, e.g. GRCg6a
+    bed_data, genome_dict = epigenome_data.load_data(genome_set, width = sequence_len) # ["GRCg6a"]
+    
+    chrom1 = bed_data["chrom"] == "1"
+    
+    train_data = bed_data[ ~chrom1 ]
+    test_data = bed_data[ chrom1 ]
+    
+    train_dataset = epigenome_data.BedDataset(train_data, genome_dict, width = sequence_len, mask = args.mlm) 
+    test_dataset = epigenome_data.BedDataset(test_data, genome_dict, width = sequence_len, mask = args.mlm) 
 
 train_dataloader = jdl.DataLoader(
     train_dataset, # Can be a jdl.Dataset or pytorch or huggingface or tensorflow dataset
-    backend='pytorch', # Use 'jax' backend for loading data
+    backend='pytorch', 
     batch_size=batch_size, # Batch size 
     shuffle=True, # Shuffle the dataloader every iteration or not
     drop_last=True, # Drop the last batch or not
@@ -238,12 +248,13 @@ train_dataloader = jdl.DataLoader(
 
 test_dataloader = jdl.DataLoader(
     test_dataset, # Can be a jdl.Dataset or pytorch or huggingface or tensorflow dataset
-    backend='pytorch', # Use 'jax' backend for loading data
+    backend='pytorch', 
     batch_size=batch_size, # Batch size 
     shuffle=False, # Shuffle the dataloader every iteration or not
     drop_last=True, # Drop the last batch or not
     num_workers = num_workers
 ) # type: ignore
+
 
 model = eqx.filter_shard(model, rep_sharding)
 
@@ -263,7 +274,7 @@ results_dir.mkdir(exist_ok = True, parents = True)
 
 train_losses = []
 test_losses = []
-for epoch in range(50): 
+for epoch in range(20): 
     # training loop
     start_time = time.time()
     np.random.seed( time.time_ns() % (2**32) )
