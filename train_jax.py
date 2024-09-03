@@ -32,8 +32,8 @@ parser.add_argument('-g', '--genome_set', type=str, default = "all", help="all, 
 
 parser.add_argument('-m', '--mlm', action='store_true', help='Masked language modeling rather than autoregressive')
 
-args = parser.parse_args(['Mamba','-g','wiki'])
-#args = parser.parse_args()
+#args = parser.parse_args(['Mamba','-g','wiki'])
+args = parser.parse_args()
 
 #@eqx.filter_value_and_grad
 def compute_loss(model, data):
@@ -265,7 +265,7 @@ results_dir.mkdir(exist_ok = True, parents = True)
 
 train_losses = []
 test_losses = []
-for epoch in range(50): 
+for epoch in range(20): 
     # training loop
     start_time = time.time()
     np.random.seed( time.time_ns() % (2**32) )
