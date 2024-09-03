@@ -130,7 +130,7 @@ def get_mask_np_efficient(
         true_prob = missing_rate * corrupt_rate)
     
     to_mask[corrupt_mask, :] = 0.
-    channel_on = np.random.randint(0, 4, size=int(corrupt_mask.sum()))
+    channel_on = np.random.randint(0, C, size=int(corrupt_mask.sum()))
     to_mask[corrupt_mask,channel_on] = 1.
 
     return regular_mask | cheat_mask | corrupt_mask
