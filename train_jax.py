@@ -34,6 +34,8 @@ parser.add_argument('-m', '--mlm', action='store_true', help='Masked language mo
 #args = parser.parse_args(['Mamba','-m','-g','GRCg6a'])
 args = parser.parse_args()
 
+print(args)
+
 #@eqx.filter_value_and_grad
 def compute_loss(model, data):
     if args.mlm: 
@@ -245,7 +247,14 @@ test_dataloader = jdl.DataLoader(
 
 model = eqx.filter_shard(model, rep_sharding)
 
-optim = optax.adam(learning_rate = 3e-3)
+sched = optax.warmup_cosine_decay_schedule(
+    init_value = 1e-6, 
+    peak_value = 1e-3, 
+    warmup_steps = 10000, 
+    decay_steps = 20000 * 50, 
+    end_value = 1e-4
+)
+optim = optax.adam(learning_rate = sched) # 3e-3
 opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
 label = "MLM" if args.mlm else "LM"
@@ -278,9 +287,12 @@ from pathlib import Path
 
 basedir = Path("jax_results")
 for results_dir in basedir.glob("*"): 
-    metrics = pd.read_csv(results_dir / "metrics.tsv", sep="\t")
+    fn = results_dir / "metrics.tsv"
+    if not fn.exists(): 
+        continue
+    metrics = pd.read_csv(fn, sep="\t")
     name = results_dir.name
-    plt.plot(metrics["train_loss"], label = f"{name}_train")
+    #plt.plot(metrics["train_loss"], label = f"{name}_train")
     plt.plot(metrics["test_loss"], label = f"{name}_test")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
