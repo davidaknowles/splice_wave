@@ -214,7 +214,7 @@ else:
     raise ValueError(f"Unknown model {args.model}")
 
 if args.genome_set == "wiki": 
-    data = wiki_data.load_dataset("wikipedia", "20220301.en", split='train')
+    data = wiki_data.load_dataset("wikipedia", "20220301.en", split='train', trust_remote_code=True)
 
     train_test_split = data.train_test_split(test_size=0.2)
 
@@ -265,7 +265,7 @@ sched = optax.warmup_cosine_decay_schedule(
     decay_steps = 20000 * 50, 
     end_value = 1e-4
 )
-optim = optax.adam(learning_rate = sched) # 3e-3
+optim = optax.adam(learning_rate = 3e-3)
 opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
 label = "MLM" if args.mlm else "LM"
