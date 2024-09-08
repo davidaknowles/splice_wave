@@ -296,15 +296,23 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from pathlib import Path
 
+# why no Transformer Charformer results for MLM wiki? 
+# on LM wiki mamba seems to do way better? no charformer because it can't do LM
+# on LM small mamba > conv > convformer > transformer
+# on MLM small transformer > conv > conformer/charformer. (although transformer is unstable at end??)
+
+# TODO: 
+# Transformer, Charformer MLM wiki
+# mamba MLM small
 basedir = Path("jax_results")
-for results_dir in basedir.glob("*"): 
+for results_dir in basedir.glob("*_LM_wiki"): 
     fn = results_dir / "metrics.tsv"
     if not fn.exists(): 
         continue
     metrics = pd.read_csv(fn, sep="\t")
     name = results_dir.name
     #plt.plot(metrics["train_loss"], label = f"{name}_train")
-    plt.plot(metrics["test_loss"], label = f"{name}_test")
+    plt.plot(metrics["test_loss"], "-.", label = f"{name}_test")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.legend()
