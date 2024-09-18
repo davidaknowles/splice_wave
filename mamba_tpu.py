@@ -179,7 +179,7 @@ class SelectiveStateSpaceModel(eqx.Module):
         y = selective_scan(x, delta, A, B, C, D, shard_map_kwargs = self.shard_map_kwargs)
         return y
 
-class MambaBlock(eqx.Module):
+class Mamba(eqx.Module): # renamed for consistency with o.g. implementation
     in_proj: nn.Linear
     conv1d: nn.Sequential
     ssm: SelectiveStateSpaceModel
@@ -203,13 +203,7 @@ class MambaBlock(eqx.Module):
         dt_rank = math.ceil(d_model / 16) if (dt_rank is None) else dt_rank
         d_inner = expand * d_model
         
-        (
-            key,
-            linear_key,
-            conv1d_key,
-            ssm_key,
-            out_proj_key,
-        ) = jax.random.split(key, 5)
+        key, linear_key, conv1d_key, ssm_key, out_proj_key = jax.random.split(key, 5)
 
         self.in_proj = nn.Linear( # all same as og mamba
             d_model,
@@ -263,8 +257,8 @@ class MambaBlock(eqx.Module):
         return output
 
 
-class ResidualBlock(eqx.Module):
-    mamba_block: MambaBlock
+class MambaBlock(eqx.Module):
+    mamba: Mamba
     rms_norm: nn.RMSNorm
 
     def __init__(
@@ -274,17 +268,39 @@ class ResidualBlock(eqx.Module):
         shard_map_kwargs = None,
         **kwargs
     ):
-        self.mamba_block = MambaBlock(d_model, key=key, shard_map_kwargs = shard_map_kwargs, **kwargs) 
+        self.mamba = Mamba(d_model, key=key, shard_map_kwargs = shard_map_kwargs, **kwargs) 
         self.rms_norm = nn.RMSNorm(d_model)
 
     def __call__(
         self, x: Float[Array, "batch seq_len d_model"], *, key: Optional[PRNGKeyArray] = None
     ) -> Array:
         h = jax.vmap(jax.vmap(self.rms_norm))(x)
-        return self.mamba_block(h) + x
+        return self.mamba(h) + x
 
+class BidirMambaBlock(eqx.Module):
+    mamba: Mamba
+    mamba_flip: Mamba
+    rms_norm: nn.RMSNorm
 
-class Mamba(eqx.Module):
+    def __init__(
+        self,
+        d_model: int,
+        key : PRNGKeyArray, 
+        shard_map_kwargs = None,
+        **kwargs
+    ):
+        self.mamba = Mamba(d_model, key=key, shard_map_kwargs = shard_map_kwargs, **kwargs) 
+        self.mamba_flip = Mamba(d_model, key=key, shard_map_kwargs = shard_map_kwargs, **kwargs) 
+        self.rms_norm = nn.RMSNorm(d_model)
+
+    def __call__(
+        self, x: Float[Array, "batch seq_len d_model"], *, key: Optional[PRNGKeyArray] = None
+    ) -> Array:
+        h = jax.vmap(jax.vmap(self.rms_norm))(x)
+        h_flipped = jnp.flip(h, axis=1)
+        return self.mamba(h) + self.mamba_flip(h_flipped) + x
+
+class MambaModel(eqx.Module):
     mamba_stack: nn.Sequential
     input_conv: nn.Sequential
     output_conv: nn.Sequential
@@ -298,13 +314,15 @@ class Mamba(eqx.Module):
         num_layers,
         d_model, 
         key,
+        bidir = False, 
         shard_map_kwargs = None, 
         **kwargs # expand = 2, dt_rank = None, d_conv = 4
     ):
         key, in_key, out_key, *subkeys = jax.random.split(key, num_layers + 3)
+        mixer_cls = BidirMambaBlock if bidir else MambaBlock
         self.mamba_stack = nn.Sequential(
             [
-                ResidualBlock(
+                mixer_cls(
                     d_model,
                     key=k,
                     shard_map_kwargs = shard_map_kwargs, 
@@ -369,7 +387,7 @@ if __name__=="__main__":
         "out_specs" : (P("i",None,None),P("i",None)),
         "check_rep" : False
     }
-    model = Mamba(
+    model = MambaModel(
         in_channels = 4,
         out_channels = 4, 
         kernel_size = 7, 

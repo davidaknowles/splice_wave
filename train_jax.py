@@ -24,11 +24,11 @@ import mamba_tpu
 import wiki_data
 import argparse
 
-jax.config.update("jax_debug_nans", True)
+#jax.config.update("jax_debug_nans", True)
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument('model', type=str, help='Conv, Charformer, Transformer or Convformer')
+parser.add_argument('model', type=str, help='Mamba, BidirMamba, Conv, Charformer, Transformer or Convformer')
 
 parser.add_argument('-g', '--genome_set', type=str, default = "all", help="all, small or a specific genome")
 
@@ -191,24 +191,27 @@ elif args.model == "Convformer":
         key = jr.PRNGKey(0)
     )
     model = jax.vmap(model)
-elif args.model == "Mamba": 
+elif args.model in ["Mamba", "BidirMamba"]: 
+    # setup for mamba is a bit different because we don't vmap the model - it already handles a batch
+    # dimension (because the underlying pallas scan does) 
     batch_size = 128 # 128 with pallas, 32 native scan (about 8x slower), 16 with associative scan and SUPER slow
     from jax.sharding import Mesh, PartitionSpec as P
     mesh = Mesh(devices, axis_names=('i', 'j')) # 4x1 so no point using j? 
-    shard_map_kwargs = {
+    shard_map_kwargs = { # works but maybe could be optimized? 
         "mesh" : mesh,
         "in_specs" : (P("i",None,None),P("i",None,None)), 
         "out_specs" : (P("i",None,None),P("i",None)),
         "check_rep" : False
     }
-    if args.mlm: 
+    if args.mlm and args.model=="Mamba": 
         print("Warning: Mamba is an odd choice for MLM, bidirectional Mamba would make more sense")
-    model = mamba_tpu.Mamba(
+    model = mamba_tpu.MambaModel(
         in_channels = n_channels,
         out_channels = n_channels, 
         kernel_size = 7, 
         num_layers = 6, 
         d_model = 32, # really slow if we make this bigger since SSM state is 2*d_model^2
+        bidir = args.model == "BidirMamba", 
         shard_map_kwargs = shard_map_kwargs,
         key = jr.PRNGKey(0)
     )
@@ -298,24 +301,24 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from pathlib import Path
 
-# why no Transformer Charformer results for MLM wiki? 
-# on LM wiki mamba seems to do way better? no charformer because it can't do LM
-# on LM small mamba > conv > convformer > transformer
-# on MLM small transformer > conv > conformer/charformer. (although transformer is unstable at end??)
+# MLM wiki: Mamba >> everything (no Charformer res?) 
+# LM wiki: mamba >> everything. no charformer because it can't do LM
+# LM small: mamba > conv > convformer > transformer
+# MLM small: transformer > conv/mamba > conformer/charformer. (although transformer is unstable at end?)
 
 # TODO: 
 # Transformer, Charformer MLM wiki
 # mamba MLM small
-line_styles = [':', '--', '-.', ':', '--']
+line_styles = ['--', ':', '-.', ':', '--']
 basedir = Path("jax_results")
-for i,results_dir in enumerate(basedir.glob("*_MLM_wiki")): 
+for i,results_dir in enumerate(basedir.glob("*_MLM_small")): 
     fn = results_dir / "metrics.tsv"
     if not fn.exists(): 
         continue
     metrics = pd.read_csv(fn, sep="\t")
     name = results_dir.name
     #plt.plot(metrics["train_loss"], label = f"{name}_train")
-    plt.plot(metrics["test_loss"], linestyle=line_styles[i], label = f"{name}_test")
+    plt.plot(metrics["test_loss"], linestyle=line_styles[i], label = f"{name}_test", alpha = 0.6)
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
 plt.legend()
