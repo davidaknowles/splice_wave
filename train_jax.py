@@ -24,6 +24,8 @@ import mamba_tpu
 import wiki_data
 import argparse
 
+jax.config.update("jax_debug_nans", True)
+
 parser = argparse.ArgumentParser()
 
 parser.add_argument('model', type=str, help='Conv, Charformer, Transformer or Convformer')
@@ -32,7 +34,7 @@ parser.add_argument('-g', '--genome_set', type=str, default = "all", help="all, 
 
 parser.add_argument('-m', '--mlm', action='store_true', help='Masked language modeling rather than autoregressive')
 
-#args = parser.parse_args(['Mamba','-g','wiki'])
+#args = parser.parse_args(['Mamba','-m','-g','wiki'])
 args = parser.parse_args()
 
 print(args)
@@ -304,15 +306,16 @@ from pathlib import Path
 # TODO: 
 # Transformer, Charformer MLM wiki
 # mamba MLM small
+line_styles = [':', '--', '-.', ':', '--']
 basedir = Path("jax_results")
-for results_dir in basedir.glob("*_LM_wiki"): 
+for i,results_dir in enumerate(basedir.glob("*_MLM_wiki")): 
     fn = results_dir / "metrics.tsv"
     if not fn.exists(): 
         continue
     metrics = pd.read_csv(fn, sep="\t")
     name = results_dir.name
     #plt.plot(metrics["train_loss"], label = f"{name}_train")
-    plt.plot(metrics["test_loss"], "-.", label = f"{name}_test")
+    plt.plot(metrics["test_loss"], linestyle=line_styles[i], label = f"{name}_test")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
-    plt.legend()
+plt.legend()
