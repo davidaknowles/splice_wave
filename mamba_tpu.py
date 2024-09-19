@@ -280,9 +280,9 @@ class MambaBlock(eqx.Module):
     ) -> Array:
         if self.norm_last: 
             h = self.mamba(x) + x
-            return jax.vmap(jax.vmap(self.rms_norm))(h)
+            return jax.vmap(jax.vmap(self.norm))(h)
         else: 
-            h = jax.vmap(jax.vmap(self.rms_norm))(x)
+            h = jax.vmap(jax.vmap(self.norm))(x)
             return self.mamba(h) + x
 
 class BidirMambaBlock(eqx.Module):
@@ -294,7 +294,7 @@ class BidirMambaBlock(eqx.Module):
     def __init__(
         self,
         d_model: int,
-        norm_last = True, 
+        norm_last = False, 
         layer_norm = False, 
         key : PRNGKeyArray, 
         shard_map_kwargs = None,
@@ -400,8 +400,6 @@ if __name__=="__main__":
     rep_sharding = sharding.replicate()
     mesh = Mesh(devices, axis_names=('i', 'j'))
 
-    
-    
     shard_map_kwargs = {
         "mesh" : mesh,
         "in_specs" : (P("i",None,None),P("i",None,None)), 
