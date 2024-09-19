@@ -413,6 +413,8 @@ if __name__=="__main__":
     batch_size = 16
     seq_length = 128
 
+    context_dims = [12,20]
+
     num_devices = len(jax.devices())
     devices = mesh_utils.create_device_mesh((num_devices,1))
     sharding = jshard.PositionalSharding(devices)
@@ -431,6 +433,7 @@ if __name__=="__main__":
         kernel_size = 7, 
         num_layers = 3,
         d_model = d_model,
+        context_dims = context_dims,
         shard_map_kwargs = shard_map_kwargs,
         key = key
     )
