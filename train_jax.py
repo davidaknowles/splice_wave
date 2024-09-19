@@ -39,8 +39,8 @@ parser.add_argument('-l', '--layer_norm', action='store_true', help='Use LayerNo
 
 parser.add_argument('-c', '--context', action='store_true', help='Use context (species, tissues, assay). Only relevant for Mamba models')
 
-args = parser.parse_args(['BidirMamba','-m','-c','-g','small'])
-#args = parser.parse_args()
+#args = parser.parse_args(['BidirMamba','-m','-c','-g','small'])
+args = parser.parse_args()
 
 print(args)
 
