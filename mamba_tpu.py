@@ -61,11 +61,11 @@ def selective_scan(
     _, L, d_inner = x.shape
     _, d_state = A.shape
 
-    # there's no sum here? it's just a multiply
+    # there's no sum here? it's just an elementwise multiply
     #delta_A = jnp.exp(jnp.einsum("b l d,d n -> b l d n", delta, A))
-    delta_A = jnp.exp(delta[..., None] * A) # delta_A is L x ED x N
+    delta_A = jnp.exp(delta[..., None] * A) # delta_A is B x L x ED x N
     # again not an actual sum! 
-    #delta_B_x = jnp.einsum("b l d,b l n,b l d -> b l d n", delta, B, x) # L x ED x N)
+    #delta_B_x = jnp.einsum("b l d,b l n,b l d -> b l d n", delta, B, x) # B x L x ED x N
     delta_B_x = delta[..., None] * B[:, :, None, :] * x[:, :, :, None]
 
     if native: 
@@ -259,47 +259,64 @@ class Mamba(eqx.Module): # renamed for consistency with o.g. implementation
 
 class MambaBlock(eqx.Module):
     mamba: Mamba
-    rms_norm: nn.RMSNorm
+    norm: nn.RMSNorm
+    norm_last: bool
 
     def __init__(
         self,
         d_model: int,
+        norm_last = False, 
+        layer_norm = False, 
         key : PRNGKeyArray, 
         shard_map_kwargs = None,
         **kwargs
     ):
+        self.norm_last = norm_last
         self.mamba = Mamba(d_model, key=key, shard_map_kwargs = shard_map_kwargs, **kwargs) 
-        self.rms_norm = nn.RMSNorm(d_model)
+        self.norm = (nn.LayerNorm if layer_norm else nn.RMSNorm)(d_model)
 
     def __call__(
         self, x: Float[Array, "batch seq_len d_model"], *, key: Optional[PRNGKeyArray] = None
     ) -> Array:
-        h = jax.vmap(jax.vmap(self.rms_norm))(x)
-        return self.mamba(h) + x
+        if self.norm_last: 
+            h = self.mamba(x) + x
+            return jax.vmap(jax.vmap(self.rms_norm))(h)
+        else: 
+            h = jax.vmap(jax.vmap(self.rms_norm))(x)
+            return self.mamba(h) + x
 
 class BidirMambaBlock(eqx.Module):
     mamba: Mamba
     mamba_flip: Mamba
-    rms_norm: nn.RMSNorm
+    norm: nn.RMSNorm
+    norm_last: bool
 
     def __init__(
         self,
         d_model: int,
+        norm_last = True, 
+        layer_norm = False, 
         key : PRNGKeyArray, 
         shard_map_kwargs = None,
         **kwargs
     ):
+        self.norm_last = norm_last
         self.mamba = Mamba(d_model, key=key, shard_map_kwargs = shard_map_kwargs, **kwargs) 
         self.mamba_flip = Mamba(d_model, key=key, shard_map_kwargs = shard_map_kwargs, **kwargs) 
-        self.rms_norm = nn.RMSNorm(d_model)
+        self.norm = (nn.LayerNorm if layer_norm else nn.RMSNorm)(d_model)
 
     def __call__(
         self, x: Float[Array, "batch seq_len d_model"], *, key: Optional[PRNGKeyArray] = None
     ) -> Array:
-        h = jax.vmap(jax.vmap(self.rms_norm))(x)
-        h_flipped = jnp.flip(h, axis=1)
-        return self.mamba(h) + self.mamba_flip(h_flipped) + x
-
+        if self.norm_last: 
+            x_flipped = jnp.flip(x, axis=1)
+            h = self.mamba(x) + self.mamba_flip(x_flipped) + x
+            return jax.vmap(jax.vmap(self.norm))(h)
+        else: 
+            h = jax.vmap(jax.vmap(self.norm))(x)
+            h_flipped = jnp.flip(h, axis=1)
+            return self.mamba(h) + self.mamba_flip(h_flipped) + x
+            
 class MambaModel(eqx.Module):
     mamba_stack: nn.Sequential
     input_conv: nn.Sequential
@@ -315,6 +332,8 @@ class MambaModel(eqx.Module):
         d_model, 
         key,
         bidir = False, 
+        norm_last = False,
+        layer_norm = False, 
         shard_map_kwargs = None, 
         **kwargs # expand = 2, dt_rank = None, d_conv = 4
     ):
@@ -324,6 +343,8 @@ class MambaModel(eqx.Module):
             [
                 mixer_cls(
                     d_model,
+                    norm_last = norm_last, 
+                    layer_norm = layer_norm,
                     key=k,
                     shard_map_kwargs = shard_map_kwargs, 
                     **kwargs

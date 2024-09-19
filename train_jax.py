@@ -34,6 +34,9 @@ parser.add_argument('-g', '--genome_set', type=str, default = "all", help="all, 
 
 parser.add_argument('-m', '--mlm', action='store_true', help='Masked language modeling rather than autoregressive')
 
+parser.add_argument('-f', '--norm_first', action='store_true', help='Only relevant for Mamba')
+parser.add_argument('-l', '--layer_norm', action='store_true', help='Use LayerNorm instead of RMSNorm. Only relevant for Mamba')
+
 #args = parser.parse_args(['Mamba','-m','-g','wiki'])
 args = parser.parse_args()
 
@@ -129,6 +132,8 @@ rep_sharding = sharding.replicate()
 
 n_channels = 42 if args.genome_set == "wiki" else 4
 
+model_name = args.model
+
 if args.model == "Conv": 
     batch_size = 1024 
     # fully convolutional network, no transformers or similar so limited receptive field
@@ -212,9 +217,12 @@ elif args.model in ["Mamba", "BidirMamba"]:
         num_layers = 6, 
         d_model = 32, # really slow if we make this bigger since SSM state is 2*d_model^2
         bidir = args.model == "BidirMamba", 
+        norm_first = args.norm_first, 
+        layer_norm = args.layer_norm, 
         shard_map_kwargs = shard_map_kwargs,
         key = jr.PRNGKey(0)
     )
+    model_name = args.model + ("-normlast" if args.norm_last else "") + ("-layernorm" if args.layer_norm else "")
 else: 
     raise ValueError(f"Unknown model {args.model}")
 
@@ -274,7 +282,7 @@ optim = optax.adam(learning_rate = 3e-3)
 opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
 label = "MLM" if args.mlm else "LM"
-results_dir = Path(f"jax_results/{args.model}_{label}_{args.genome_set}")
+results_dir = Path(f"jax_results/{model_name}_{label}_{args.genome_set}")
 results_dir.mkdir(exist_ok = True, parents = True)
 
 train_losses = []
@@ -309,9 +317,9 @@ from pathlib import Path
 # TODO: 
 # Transformer, Charformer MLM wiki
 # mamba MLM small
-line_styles = ['--', ':', '-.', ':', '--']
+line_styles = ['--', ':', '-.', ':', '--', ':']
 basedir = Path("jax_results")
-for i,results_dir in enumerate(basedir.glob("*_MLM_small")): 
+for i,results_dir in enumerate(basedir.glob("*_MLM_wiki")): 
     fn = results_dir / "metrics.tsv"
     if not fn.exists(): 
         continue
