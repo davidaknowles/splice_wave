@@ -267,7 +267,7 @@ class MambaBlock(eqx.Module):
         d_model: int,
         norm_last = False, 
         layer_norm = False, 
-        key : PRNGKeyArray, 
+        key : PRNGKeyArray = None, 
         shard_map_kwargs = None,
         **kwargs
     ):
@@ -296,7 +296,7 @@ class BidirMambaBlock(eqx.Module):
         d_model: int,
         norm_last = False, 
         layer_norm = False, 
-        key : PRNGKeyArray, 
+        key : PRNGKeyArray = None, 
         shard_map_kwargs = None,
         **kwargs
     ):
