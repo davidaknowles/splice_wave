@@ -10,6 +10,10 @@ from jax.experimental import shard_map
 import einops
 from jax.sharding import Mesh, PartitionSpec as P
 
+import jax.experimental.mesh_utils as mesh_utils
+import jax.random as jr
+import jax.sharding as jshard
+
 def native_scan(x, a, h0 = None): 
     if h0 is None: 
         h0 = jnp.zeros_like(x[0]) 
@@ -79,10 +83,13 @@ def selective_scan(
             f = plscan.lru_pallas_scan
         else: 
             f = shard_map.shard_map(plscan.lru_pallas_scan, **shard_map_kwargs)
+        delta_B_x = einops.rearrange(delta_B_x, 'b l d n -> b l (d n)')
+        if h0 is None: 
+            h0 = jnp.zeros_like(delta_B_x[:,0]) 
         h, _ = f(
-            einops.rearrange(delta_B_x, 'b l d n -> b l (d n)'),
+            delta_B_x,
             einops.rearrange(delta_A, 'b l d n -> b l (d n)'),
-            h0 = h0
+            h0
         )
         h = einops.rearrange(h, 'b l (d n) -> b l d n', d=d_inner, n=d_state)
     
@@ -271,7 +278,7 @@ class MambaBlock(eqx.Module):
         d_model: int,
         norm_last = False, 
         layer_norm = False, 
-        key : PRNGKeyArray, 
+        key : PRNGKeyArray = None, 
         shard_map_kwargs = None,
         **kwargs
     ):
@@ -300,7 +307,7 @@ class BidirMambaBlock(eqx.Module):
         d_model: int,
         norm_last = False, 
         layer_norm = False, 
-        key : PRNGKeyArray, 
+        key : PRNGKeyArray = None, 
         shard_map_kwargs = None,
         **kwargs
     ):
@@ -326,6 +333,7 @@ class MambaModel(eqx.Module):
     input_conv: nn.Sequential
     output_conv: nn.Sequential
     normalization: nn.RMSNorm
+    context_embeddings: list
     
     def __init__(
         self,
@@ -335,14 +343,14 @@ class MambaModel(eqx.Module):
         num_layers,
         d_model, 
         key,
-        context_dims = None,
+        context_dims = [],
         bidir = False, 
         norm_last = False,
         layer_norm = False, 
         shard_map_kwargs = None, 
         **kwargs # expand = 2, dt_rank = None, d_conv = 4
     ):
-        in_key, out_key, *subkeys = jax.random.split(key, num_layers + 2)
+        key, in_key, out_key, *subkeys = jax.random.split(key, num_layers + 3)
         mixer_cls = BidirMambaBlock if bidir else MambaBlock
         #self.mamba_stack = nn.Sequential(
         self.mamba_stack = [
@@ -370,11 +378,14 @@ class MambaModel(eqx.Module):
             nn.Conv1d(d_model, out_channels, kernel_size, padding=padding, use_bias = False, key = out_key) # could try to tie in and out (and use convtranspose for out?)
         ])
 
-        if context_dims is not None: 
-            self.context_embeddings = [
-                nn.Embedding(context_dim, d_model**2 * 2) # assume expand==2
-                for context_dim in context_dims
-            ]
+        embedding_keys = jax.random.split(key, len(context_dims))
+        self.context_embeddings = [
+            nn.Embedding(
+                num_embeddings = context_dim, 
+                embedding_size = d_model**2 * 4, # assume expand==2
+                key = embedding_keys[i])
+            for i,context_dim in enumerate(context_dims)
+        ]
 
     def __call__(
         self,
@@ -386,7 +397,7 @@ class MambaModel(eqx.Module):
     ) -> Float[Array, "batch out_channels seq_len"]:  # noqa
         
         if context is not None: 
-            context_embeds = [ jax.vmap(embedding)(context[i]) for i in enumerate(self.context_embeddings) ]
+            context_embeds = [ jax.vmap(embedding)(context[i]) for i,embedding in enumerate(self.context_embeddings) ]
             h0 = jnp.sum(jnp.stack(context_embeds), axis=0)
         else:
             h0=None
@@ -401,14 +412,6 @@ if __name__=="__main__":
 
     d_model = 32
     key = jax.random.PRNGKey(0)
-    model = Mamba(
-        in_channels = 4,
-        out_channels = 4, 
-        kernel_size = 7, 
-        num_layers = 3,
-        d_model = d_model,
-        key = key
-    )
 
     batch_size = 16
     seq_length = 128
@@ -423,7 +426,7 @@ if __name__=="__main__":
 
     shard_map_kwargs = {
         "mesh" : mesh,
-        "in_specs" : (P("i",None,None),P("i",None,None)), 
+        "in_specs" : (P("i",None,None),P("i",None,None),P("i",None)), 
         "out_specs" : (P("i",None,None),P("i",None)),
         "check_rep" : False
     }
@@ -439,31 +442,36 @@ if __name__=="__main__":
     )
 
     x = jax.random.normal(key, (batch_size, 4, seq_length))
+    context = [ 
+        jax.random.randint(key, shape=(batch_size,), minval=0, maxval=context_dim)
+        for context_dim in context_dims ]
+    
     x_sharded = eqx.filter_shard(x, rep_sharding)
     model_sharded = eqx.filter_shard(model, rep_sharding)
-    output = model_sharded(x_sharded)
+    output = model_sharded(x_sharded, context = context)
     print(output.shape)
+
+    if False: 
+        key = jax.random.PRNGKey(0)
+        seq_length = 200
+        d_model = 128
+        batch_size = 12
+        x = jax.random.normal(key, (batch_size, seq_length, d_model))
+        a = jax.random.normal(key, (batch_size, seq_length, d_model))
     
-    key = jax.random.PRNGKey(0)
-    seq_length = 200
-    d_model = 128
-    batch_size = 12
-    x = jax.random.normal(key, (batch_size, seq_length, d_model))
-    a = jax.random.normal(key, (batch_size, seq_length, d_model))
-
-    x_sharded, a_sharded = eqx.filter_shard((x,a), rep_sharding)
-
-    f = shard_map.shard_map(
-        plscan.lru_pallas_scan, 
-        mesh = mesh,
-        in_specs = (P("i",None,None),P("i",None,None)), 
-        out_specs = (P("i",None,None),P("i",None)),
-        check_rep = False
-    )
-    h, h_last = f(x_sharded, a_sharded) 
-    print(h.shape)
-
-    x = jax.random.normal(key, (seq_length, d_model))
-    a = jax.random.normal(key, (seq_length, d_model))
-    h, h_last = native_scan(x,a)
-    h_, h_last = associative_scan(x,a)
+        x_sharded, a_sharded = eqx.filter_shard((x,a), rep_sharding)
+    
+        f = shard_map.shard_map(
+            plscan.lru_pallas_scan, 
+            mesh = mesh,
+            in_specs = (P("i",None,None),P("i",None,None)), 
+            out_specs = (P("i",None,None),P("i",None)),
+            check_rep = False
+        )
+        h, h_last = f(x_sharded, a_sharded) 
+        print(h.shape)
+    
+        x = jax.random.normal(key, (seq_length, d_model))
+        a = jax.random.normal(key, (seq_length, d_model))
+        h, h_last = native_scan(x,a)
+        h_, h_last = associative_scan(x,a)

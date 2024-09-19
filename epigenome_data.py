@@ -126,9 +126,14 @@ def load_data(genome_subset = None, width = 1000):
     if genome_subset is not None: 
         bed_data = bed_data[ bed_data["genome"].isin(genome_subset) ]
     
+    
+    
     bed_data['tissue'] = bed_data['tissue'].fillna('None').astype("category")
     bed_data['species'] = bed_data['species'].astype("category")
     bed_data['assay'] = bed_data['assay'].astype("category")
+
+    for col in ['tissue', 'species', 'assay']: 
+        bed_data[col] = bed_data[col].cat.remove_unused_categories()
 
     return bed_data, genome_dict
 

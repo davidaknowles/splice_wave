@@ -915,7 +915,7 @@ def pallas_lru(
 def lru_pallas_scan(
     x: complex_lib.RealOrComplex,
     a: complex_lib.RealOrComplex,
-    h0: complex_lib.RealOrComplex | None = None,
+    h0: complex_lib.RealOrComplex,
     reverse: bool = False,
     seq_axis: str | None = None,
     seq_axis_index_groups: list[list[int]] | None = None,

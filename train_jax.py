@@ -37,19 +37,24 @@ parser.add_argument('-m', '--mlm', action='store_true', help='Masked language mo
 parser.add_argument('-f', '--norm_last', action='store_true', help='Only relevant for Mamba')
 parser.add_argument('-l', '--layer_norm', action='store_true', help='Use LayerNorm instead of RMSNorm. Only relevant for Mamba')
 
-#args = parser.parse_args(['Mamba','-m','-g','wiki'])
-args = parser.parse_args()
+parser.add_argument('-c', '--context', action='store_true', help='Use context (species, tissues, assay). Only relevant for Mamba models')
+
+args = parser.parse_args(['BidirMamba','-m','-c','-g','small'])
+#args = parser.parse_args()
 
 print(args)
 
 #@eqx.filter_value_and_grad
 def compute_loss(model, data):
     if args.mlm: 
-        one_hot_T, x, mask = data
+        species, tissue, assay, one_hot_T, x, mask = data
     else: 
-        x = data
+        species, tissue, assay, x = data
     #output = jax.vmap(model)(x) # do this outside now to accommodate models like Mamba that aleady handle batch
-    output = model(x)
+    if args.context:
+        output = model(x, context = [species, tissue, assay])
+    else: 
+        output = model(x)
     out_norm = output - logsumexp(output, axis=1, keepdims=True)
     #seq_mask = mask[:, None, 1:].astype(jnp.float32) # could just sum one_hot_masked_T instead
     if args.mlm: 
@@ -94,10 +99,10 @@ def loop(dataloader, model, rep_sharding = None, opt_state = None, print_every =
             species, tissue, assay, one_hot, one_hot_masked, mask = batch
             one_hot_masked_T = np.swapaxes(one_hot_masked, 1, 2)
             one_hot_T = np.swapaxes(one_hot, 1, 2)
-            data = (one_hot_T, one_hot_masked_T, mask)
+            data = (species, tissue, assay, one_hot_T, one_hot_masked_T, mask)
         else: 
             species, tissue, assay, one_hot = batch
-            data = np.swapaxes(one_hot, 1, 2)
+            data = [species, tissue, assay, np.swapaxes(one_hot, 1, 2)]
 
         if rep_sharding is not None: 
             data = eqx.filter_shard(data, rep_sharding)
@@ -130,7 +135,38 @@ devices = mesh_utils.create_device_mesh((num_devices,1))
 sharding = jshard.PositionalSharding(devices)
 rep_sharding = sharding.replicate()
 
-n_channels = 42 if args.genome_set == "wiki" else 4
+if args.genome_set == "wiki": 
+    n_channels = 42
+    data = wiki_data.load_dataset("wikipedia", "20220301.en", split='train', trust_remote_code=True)
+
+    train_test_split = data.train_test_split(test_size=0.2)
+
+    train_dataset = wiki_data.WikiDataset(train_test_split['train'], mask = args.mlm)
+    test_dataset = wiki_data.WikiDataset(train_test_split['test'], mask = args.mlm)
+else: 
+    n_channels = 4
+    if args.genome_set == "all": 
+        genome_set = None
+    elif args.genome_set == "small":
+        genome_set = ["galGal5", "Xenopus_tropicalis_v9.1", "ARS1", "GRCm38", "GRCg6a"]
+    else: 
+        genome_set = [args.genome_set] # this should be a single genome, e.g. GRCg6a
+    bed_data, genome_dict = epigenome_data.load_data(genome_set, width = sequence_len) # ["GRCg6a"]
+    
+    chrom1 = bed_data["chrom"] == "1"
+    
+    train_data = bed_data[ ~chrom1 ]
+    test_data = bed_data[ chrom1 ]
+
+    context_dims = [
+        len(bed_data.species.cat.categories), 
+        len(bed_data.tissue.cat.categories), 
+        len(bed_data.assay.cat.categories)
+    ]
+                                             
+    train_dataset = epigenome_data.BedDataset(train_data, genome_dict, width = sequence_len, mask = args.mlm) 
+    test_dataset = epigenome_data.BedDataset(test_data, genome_dict, width = sequence_len, mask = args.mlm) 
+
 
 model_name = args.model
 
@@ -204,7 +240,7 @@ elif args.model in ["Mamba", "BidirMamba"]:
     mesh = Mesh(devices, axis_names=('i', 'j')) # 4x1 so no point using j? 
     shard_map_kwargs = { # works but maybe could be optimized? 
         "mesh" : mesh,
-        "in_specs" : (P("i",None,None),P("i",None,None)), 
+        "in_specs" : (P("i",None,None),P("i",None,None),P("i",None)), 
         "out_specs" : (P("i",None,None),P("i",None)),
         "check_rep" : False
     }
@@ -219,36 +255,13 @@ elif args.model in ["Mamba", "BidirMamba"]:
         bidir = args.model == "BidirMamba", 
         norm_last = args.norm_last, 
         layer_norm = args.layer_norm, 
+        context_dims = context_dims if args.context else [],
         shard_map_kwargs = shard_map_kwargs,
         key = jr.PRNGKey(0)
     )
-    model_name = args.model + ("-normlast" if args.norm_last else "") + ("-layernorm" if args.layer_norm else "")
+    model_name = ("context-" if args.context else "") + args.model + ("-normlast" if args.norm_last else "") + ("-layernorm" if args.layer_norm else "")
 else: 
     raise ValueError(f"Unknown model {args.model}")
-
-if args.genome_set == "wiki": 
-    data = wiki_data.load_dataset("wikipedia", "20220301.en", split='train', trust_remote_code=True)
-
-    train_test_split = data.train_test_split(test_size=0.2)
-
-    train_dataset = wiki_data.WikiDataset(train_test_split['train'], mask = args.mlm)
-    test_dataset = wiki_data.WikiDataset(train_test_split['test'], mask = args.mlm)
-else: 
-    if args.genome_set == "all": 
-        genome_set = None
-    elif args.genome_set == "small":
-        genome_set = ["galGal5", "Xenopus_tropicalis_v9.1", "ARS1", "GRCm38", "GRCg6a"]
-    else: 
-        genome_set = [args.genome_set] # this should be a single genome, e.g. GRCg6a
-    bed_data, genome_dict = epigenome_data.load_data(genome_set, width = sequence_len) # ["GRCg6a"]
-    
-    chrom1 = bed_data["chrom"] == "1"
-    
-    train_data = bed_data[ ~chrom1 ]
-    test_data = bed_data[ chrom1 ]
-    
-    train_dataset = epigenome_data.BedDataset(train_data, genome_dict, width = sequence_len, mask = args.mlm) 
-    test_dataset = epigenome_data.BedDataset(test_data, genome_dict, width = sequence_len, mask = args.mlm) 
 
 train_dataloader = jdl.DataLoader(
     train_dataset, # Can be a jdl.Dataset or pytorch or huggingface or tensorflow dataset
@@ -267,7 +280,6 @@ test_dataloader = jdl.DataLoader(
     drop_last=True, # Drop the last batch or not
     num_workers = num_workers
 ) # type: ignore
-
 
 model = eqx.filter_shard(model, rep_sharding)
 
