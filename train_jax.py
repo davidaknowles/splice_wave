@@ -297,9 +297,13 @@ label = "MLM" if args.mlm else "LM"
 results_dir = Path(f"jax_results/{model_name}_{label}_{args.genome_set}")
 results_dir.mkdir(exist_ok = True, parents = True)
 
+patience = 5
+patience_counter = patience
+best_val_loss = np.inf
+
 train_losses = []
 test_losses = []
-for epoch in range(20): 
+for epoch in range(30): 
     # training loop
     start_time = time.time()
     np.random.seed( time.time_ns() % (2**32) )
@@ -312,10 +316,20 @@ for epoch in range(20):
     test_losses.append(test_loss)
 
     epoch_time = time.time() - start_time
-    print(f"Epoch:{epoch} train_loss:{train_loss:.5} test_loss:{test_loss:.5} took {epoch_time:.2}s")
-
-    eqx.tree_serialise_leaves(results_dir / "checkpoint.pkl", model)
+    print(f"Epoch:{epoch} train_loss:{train_loss:.5} test_loss:{test_loss:.5} took {epoch_time:.2}s patience {patience_counter}")
     pd.DataFrame({"train_loss": train_losses, "test_loss" : test_losses}).to_csv(results_dir / "metrics.tsv", sep = "\t", index = False)
+
+    if test_loss < best_val_loss: # only checkpoint best
+        eqx.tree_serialise_leaves(results_dir / "checkpoint.pkl", model)
+        best_val_loss = test_loss
+        patience_counter = patience
+    else:
+        patience_counter -= 1
+        if patience_counter <= 0:
+            #model = eqx.tree_deserialise_leaves(results_dir / "checkpoint.pkl", model_original) # this would only be useful if we were doing something else with model afterward
+            break
+    
+
 
 import matplotlib.pyplot as plt
 import pandas as pd
