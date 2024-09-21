@@ -276,8 +276,8 @@ class MambaBlock(eqx.Module):
     def __init__(
         self,
         d_model: int,
-        norm_last = False, 
-        layer_norm = False, 
+        norm_last = False, # norm_last seems a little worse
+        layer_norm = False, # layer_norm maybe v marginally better? 
         key : PRNGKeyArray = None, 
         shard_map_kwargs = None,
         **kwargs

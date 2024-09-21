@@ -30,7 +30,7 @@ parser = argparse.ArgumentParser()
 
 parser.add_argument('model', type=str, help='Mamba, BidirMamba, Conv, Charformer, Transformer or Convformer')
 
-parser.add_argument('-g', '--genome_set', type=str, default = "all", help="all, small or a specific genome")
+parser.add_argument('-g', '--genome_set', type=str, default = "all", help="all, small or a specific genome e.g. GRCg6a")
 
 parser.add_argument('-m', '--mlm', action='store_true', help='Masked language modeling rather than autoregressive')
 
@@ -39,7 +39,7 @@ parser.add_argument('-l', '--layer_norm', action='store_true', help='Use LayerNo
 
 parser.add_argument('-c', '--context', action='store_true', help='Use context (species, tissues, assay). Only relevant for Mamba models')
 
-#args = parser.parse_args(['BidirMamba','-m','-c','-g','small'])
+#args = parser.parse_args(['Conv','-m','-g','GRCg6a'])
 args = parser.parse_args()
 
 print(args)
@@ -343,9 +343,9 @@ from pathlib import Path
 # TODO: 
 # Transformer, Charformer MLM wiki
 # mamba MLM small
-line_styles = ['--', ':', '-.', ':', '--', ':']
+line_styles = ['--', ':', '-.', ':', '--', ':', '-.']
 basedir = Path("jax_results")
-for i,results_dir in enumerate(basedir.glob("*_MLM_wiki")): 
+for i,results_dir in enumerate(basedir.glob("Bi*_MLM_wiki")): 
     fn = results_dir / "metrics.tsv"
     if not fn.exists(): 
         continue
