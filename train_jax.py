@@ -348,7 +348,7 @@ from pathlib import Path
 # mamba MLM small
 line_styles = ['--', ':', '-.', ':', '--', ':', '-.']
 basedir = Path("jax_results")
-for i,results_dir in enumerate(basedir.glob("Bi*_MLM_wiki")): 
+for i,results_dir in enumerate(basedir.glob("*Ma*_LM_small")): 
     fn = results_dir / "metrics.tsv"
     if not fn.exists(): 
         continue

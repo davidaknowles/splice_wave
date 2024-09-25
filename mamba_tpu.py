@@ -268,7 +268,7 @@ class Mamba(eqx.Module): # renamed for consistency with o.g. implementation
         B, seq_len, d = x.shape
         x_and_res = jax.vmap(jax.vmap(self.in_proj))(x)
 
-        if self.inject is not None: 
+        if self.inject: 
             # h0 is B x bigdim
             # x_and_res is B x L x somedim
             x_and_res = x_and_res + jax.vmap(self.inject)(h0)[:, None, :] # broadcast across positions
