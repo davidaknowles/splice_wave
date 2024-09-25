@@ -262,7 +262,7 @@ elif args.model in ["Mamba", "BidirMamba"]:
         shard_map_kwargs = shard_map_kwargs,
         key = jr.PRNGKey(0)
     )
-    model_name = ("context-" if args.context else "") + args.model + ("-normlast" if args.norm_last else "") + ("-layernorm" if args.layer_norm else "")
+    model_name = ("inject-" if args.inject else "") + ("context-" if args.context else "") + args.model + ("-normlast" if args.norm_last else "") + ("-layernorm" if args.layer_norm else "")
 else: 
     raise ValueError(f"Unknown model {args.model}")
 
