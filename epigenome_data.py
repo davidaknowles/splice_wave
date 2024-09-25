@@ -104,7 +104,7 @@ class BedDataset(torch.utils.data.Dataset):
         return to_return
 
 def load_data(genome_subset = None, width = 1000): 
-    vertebrate_epigenomes = Path("vertebrate_epigenomes")
+    vertebrate_epigenomes = Path("~/splice_wave/vertebrate_epigenomes")
 
     genome_urls = pd.read_csv(vertebrate_epigenomes / "genome_urls.tsv", sep = "\t")
     genomes_dir = Path("genomes")

@@ -195,6 +195,7 @@ class Mamba(eqx.Module): # renamed for consistency with o.g. implementation
     conv1d: nn.Sequential
     ssm: SelectiveStateSpaceModel
     out_proj: nn.Linear
+    inject: nn.Linear | None
 
     def __init__(
         self,
@@ -207,6 +208,7 @@ class Mamba(eqx.Module): # renamed for consistency with o.g. implementation
         use_out_proj_bias: bool = True,
         ssm_use_delta_proj_bias: bool = False,
         ssm_use_input_proj_bias: bool = False,
+        inject: bool = False, 
         shard_map_kwargs = None,
         *,
         key: PRNGKeyArray,
@@ -215,6 +217,16 @@ class Mamba(eqx.Module): # renamed for consistency with o.g. implementation
         d_inner = expand * d_model
         
         key, linear_key, conv1d_key, ssm_key, out_proj_key = jax.random.split(key, 5)
+
+        if inject: 
+            key, inject_key = jax.random.split(key, 2)
+            self.inject = nn.Linear(
+                d_model**2 * 4, 
+                d_inner * 2, 
+                key = inject_key
+            )
+        else: 
+            self.inject = False
 
         self.in_proj = nn.Linear( # all same as og mamba
             d_model,
@@ -255,6 +267,11 @@ class Mamba(eqx.Module): # renamed for consistency with o.g. implementation
     def __call__(self, x: Array, h0 = None):
         B, seq_len, d = x.shape
         x_and_res = jax.vmap(jax.vmap(self.in_proj))(x)
+
+        if self.inject is not None: 
+            # h0 is B x bigdim
+            # x_and_res is B x L x somedim
+            x_and_res = x_and_res + jax.vmap(self.inject)(h0)[:, None, :] # broadcast across positions
 
         (x, res) = jnp.split(x_and_res, 2, axis=-1)
         x = jax.vmap(self.conv1d)(x)[:, :seq_len, :]

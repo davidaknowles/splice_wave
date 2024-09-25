@@ -256,7 +256,8 @@ class Mamba(eqx.Module):
         out_channels,
         kernel_size,
         num_layers,
-        d_model, 
+        d_model,
+        
         key,
         **kwargs # expand = 2, dt_rank = None, d_conv = 4
     ):

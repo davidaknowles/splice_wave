@@ -39,8 +39,10 @@ parser.add_argument('-l', '--layer_norm', action='store_true', help='Use LayerNo
 
 parser.add_argument('-c', '--context', action='store_true', help='Use context (species, tissues, assay). Only relevant for Mamba models')
 
-#args = parser.parse_args(['Conv','-m','-g','GRCg6a'])
-args = parser.parse_args()
+parser.add_argument('-i', '--inject', action='store_true', help='Use context (species, tissues, assay) at every position, not just h0.')
+
+args = parser.parse_args(['BidirMamba','-m','-g','GRCg6a','-c','-i'])
+#args = parser.parse_args()
 
 print(args)
 
@@ -256,6 +258,7 @@ elif args.model in ["Mamba", "BidirMamba"]:
         norm_last = args.norm_last, 
         layer_norm = args.layer_norm, 
         context_dims = context_dims if args.context else [],
+        inject = args.inject,
         shard_map_kwargs = shard_map_kwargs,
         key = jr.PRNGKey(0)
     )
