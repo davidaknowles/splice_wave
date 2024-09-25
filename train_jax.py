@@ -41,8 +41,8 @@ parser.add_argument('-c', '--context', action='store_true', help='Use context (s
 
 parser.add_argument('-i', '--inject', action='store_true', help='Use context (species, tissues, assay) at every position, not just h0.')
 
-args = parser.parse_args(['BidirMamba','-m','-g','GRCg6a','-c','-i'])
-#args = parser.parse_args()
+#args = parser.parse_args(['BidirMamba','-m','-g','GRCg6a','-c','-i'])
+args = parser.parse_args()
 
 print(args)
 

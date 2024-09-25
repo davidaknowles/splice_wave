@@ -383,7 +383,7 @@ class MambaModel(eqx.Module):
             ]
         # )
         self.normalization = nn.RMSNorm(d_model)
-        padding = ((kernel_size-1, 0),) # causal conv
+        padding = "SAME" if bidir else ((kernel_size-1, 0),) # causal conv
         self.input_conv = nn.Sequential([
             nn.Conv1d(
                 in_channels, d_model, kernel_size, padding = padding, key=in_key
