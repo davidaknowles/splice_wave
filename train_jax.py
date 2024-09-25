@@ -23,6 +23,7 @@ import mamba_jax
 import mamba_tpu
 import wiki_data
 import argparse
+import recurrentgemma
 
 #jax.config.update("jax_debug_nans", True)
 
@@ -41,8 +42,8 @@ parser.add_argument('-c', '--context', action='store_true', help='Use context (s
 
 parser.add_argument('-i', '--inject', action='store_true', help='Use context (species, tissues, assay) at every position, not just h0.')
 
-#args = parser.parse_args(['BidirMamba','-m','-g','GRCg6a','-c','-i'])
-args = parser.parse_args()
+args = parser.parse_args(['BidirRG','-g','GRCg6a','-c'])
+#args = parser.parse_args()
 
 print(args)
 
@@ -263,6 +264,33 @@ elif args.model in ["Mamba", "BidirMamba"]:
         key = jr.PRNGKey(0)
     )
     model_name = ("inject-" if args.inject else "") + ("context-" if args.context else "") + args.model + ("-normlast" if args.norm_last else "") + ("-layernorm" if args.layer_norm else "")
+elif args.model in ["RG", "BidirRG"]: 
+    # setup for mamba is a bit different because we don't vmap the model - it already handles a batch
+    # dimension (because the underlying pallas scan does) 
+    batch_size = 512 # 128 with pallas, 32 native scan (about 8x slower), 16 with associative scan and SUPER slow
+    from jax.sharding import Mesh, PartitionSpec as P
+    mesh = Mesh(devices, axis_names=('i', 'j')) # 4x1 so no point using j? 
+    shard_map_kwargs = { # works but maybe could be optimized? 
+        "mesh" : mesh,
+        "in_specs" : (P("i",None,None),P("i",None,None),P("i",None)), 
+        "out_specs" : (P("i",None,None),P("i",None)),
+        "check_rep" : False
+    }
+    if args.mlm and args.model=="RG": 
+        print("Warning: RG is an odd choice for MLM, BidirRG would make more sense")
+    model = recurrentgemma.RecurrentGemmaModel(
+        in_channels = n_channels,
+        out_channels = n_channels, 
+        kernel_size = 7, 
+        num_layers = 6, 
+        num_heads = 4,
+        d_model = 128, 
+        bidir = args.model == "BidirRG", 
+        context_dims = context_dims if args.context else [],
+        shard_map_kwargs = shard_map_kwargs,
+        key = jr.PRNGKey(0)
+    )
+    model_name = ("context-" if args.context else "") + args.model
 else: 
     raise ValueError(f"Unknown model {args.model}")
 
@@ -300,12 +328,22 @@ label = "MLM" if args.mlm else "LM"
 results_dir = Path(f"jax_results/{model_name}_{label}_{args.genome_set}")
 results_dir.mkdir(exist_ok = True, parents = True)
 
+train_losses = []
+test_losses = []
+
 patience = 5
 patience_counter = patience
 best_val_loss = np.inf
 
-train_losses = []
-test_losses = []
+checkpoint_file = results_dir / "checkpoint.pkl"
+metrics_file = results_dir / "metrics.tsv"
+if checkpoint_file.exists():
+    model = eqx.tree_deserialise_leaves(checkpoint_file, model) 
+    df = pd.read_csv(metrics_file, sep="\t")
+    train_losses = df['train_loss'].tolist()
+    test_losses = df['test_loss'].tolist()
+    best_val_loss = np.min(test_losses)
+
 for epoch in range(30): 
     # training loop
     start_time = time.time()
@@ -320,10 +358,10 @@ for epoch in range(30):
 
     epoch_time = time.time() - start_time
     print(f"Epoch:{epoch} train_loss:{train_loss:.5} test_loss:{test_loss:.5} took {epoch_time:.2}s patience {patience_counter}")
-    pd.DataFrame({"train_loss": train_losses, "test_loss" : test_losses}).to_csv(results_dir / "metrics.tsv", sep = "\t", index = False)
+    pd.DataFrame({"train_loss": train_losses, "test_loss" : test_losses}).to_csv(metrics_file, sep = "\t", index = False)
 
     if test_loss < best_val_loss: # only checkpoint best
-        eqx.tree_serialise_leaves(results_dir / "checkpoint.pkl", model)
+        eqx.tree_serialise_leaves(checkpoint_file, model)
         best_val_loss = test_loss
         patience_counter = patience
     else:
