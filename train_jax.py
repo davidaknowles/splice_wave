@@ -351,7 +351,7 @@ patience = 5
 if args.random: 
     from datetime import datetime
     import json
-    results_dir = results_dir / datetime.now().strftime("%m%d_%H%M")
+    results_dir = results_dir / datetime.now().strftime("%m%d%H%M%S")
     patience = 2 # more stringent
     
 results_dir.mkdir(exist_ok = True, parents = True)
