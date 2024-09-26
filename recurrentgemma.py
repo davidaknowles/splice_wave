@@ -42,28 +42,29 @@ sqrt_bound_derivative.defvjp(stable_sqrt_fwd, stable_sqrt_bwd)
 
 class BlockDiagonalLinear(eqx.Module):
 
-    num_blocks: int
+    num_heads: int
     w: jax.Array
     b: jax.Array
 
-    def __init__(self, width: int, num_blocks: int, w_init_variance_scale: float = 1.0, key=None):
-        assert width % num_blocks == 0
-        block_width = width // num_blocks
+    def __init__(self, width: int, num_heads: int, w_init_variance_scale: float = 1.0, key=None):
 
-        self.num_blocks = num_blocks
+        assert width % num_heads == 0
+        block_width = width // num_heads
+
+        self.num_heads = num_heads
 
         key_w, key_b = jax.random.split(key)
-        self.w = jax.random.normal(key_w, (num_blocks, block_width, block_width)) * jnp.sqrt(w_init_variance_scale / block_width)
-        self.b = jnp.zeros((num_blocks, block_width))
+        self.w = jax.random.normal(key_w, (num_heads, block_width, block_width)) * jnp.sqrt(w_init_variance_scale / block_width)
+        self.b = jnp.zeros((num_heads, block_width))
 
     def __call__(self, x: jax.Array) -> jax.Array:
         
         # Split x into blocks
-        x = einops.rearrange(x, "... (h i) -> ... h i", h=self.num_blocks)
+        x = einops.rearrange(x, "... (h i) -> ... h i", h=self.num_heads)
         # Linear transformation over each block
         y = jnp.einsum("... h i, h i j -> ... h j", x, self.w) + self.b
         # Flatten the output
-        return einops.rearrange(y, "... h j -> ... (h j)", h=self.num_blocks)
+        return einops.rearrange(y, "... h j -> ... (h j)", h=self.num_heads)
 
 
 class RGLRU(eqx.Module):
@@ -76,6 +77,7 @@ class RGLRU(eqx.Module):
     shard_map_kwargs: dict | None
 
     def __init__(self, width: int, num_heads: int, w_init_variance_scale: float = 1.0, min_rad=0.9, max_rad=0.999, power=8.0, key=None, shard_map_kwargs = None):
+
         self.width = width
         self.num_heads = num_heads
         self.power = power
@@ -125,7 +127,7 @@ class RecurrentBlock(eqx.Module):
     width: int
     num_heads: int
     lru_width: int
-    conv1d_temporal_width: int = 4
+    conv1d_size: int = 4
 
     linear_y: eqx.Module
     linear_x: eqx.Module
@@ -133,12 +135,14 @@ class RecurrentBlock(eqx.Module):
     conv_1d: eqx.Module
     lru: eqx.Module
 
-    def __init__(self, width: int, num_heads: int, lru_width: int = None, conv1d_temporal_width: int = 4, key=None, shard_map_kwargs = None):
+    def __init__(self, width: int, num_heads: int, lru_width: int = None, conv1d_size: int = 4, key=None, shard_map_kwargs = None, **kwargs):
+
+        
         lru_width = lru_width or width
         self.width = width
         self.num_heads = num_heads
         self.lru_width = lru_width
-        self.conv1d_temporal_width = conv1d_temporal_width
+        self.conv1d_size = conv1d_size
 
         key_y, key_x, key_out, key_conv, key_lru = jax.random.split(key, 5)
         
@@ -150,13 +154,13 @@ class RecurrentBlock(eqx.Module):
             nn.Conv1d(
                 in_channels=lru_width,
                 out_channels=lru_width,
-                kernel_size=conv1d_temporal_width,
-                padding=((conv1d_temporal_width-1, 0),),
+                kernel_size=conv1d_size,
+                padding=((conv1d_size-1, 0),),
                 key=key_conv,
             ),
             nn.Lambda(jnp.transpose)])
         
-        self.lru = RGLRU(lru_width, num_heads, key=key_lru, shard_map_kwargs = shard_map_kwargs)
+        self.lru = RGLRU(lru_width, num_heads, key=key_lru, shard_map_kwargs = shard_map_kwargs, **kwargs)
 
     def __call__(self, x: jax.Array, h0 = None) -> jax.Array:
         # y branch
@@ -212,10 +216,13 @@ class ResidualBlock(eqx.Module):
         width: int, 
         num_heads: int, 
         bidir: bool = False, 
-        mlp_expanded_width: int | None = None, 
+        mlp_width: int | None = None, 
         lru_width: int | None = None,
-        conv1d_temporal_width: int = 4, 
-        shard_map_kwargs = None, key=None):
+        conv1d_size: int = 4, 
+        shard_map_kwargs = None, 
+        key=None,
+        **kwargs
+    ):
         
         key_temporal, key_mlp = jax.random.split(key)
 
@@ -225,16 +232,17 @@ class ResidualBlock(eqx.Module):
             width=width,
             num_heads=num_heads,
             lru_width=lru_width,
-            conv1d_temporal_width=conv1d_temporal_width,
+            conv1d_size=conv1d_size,
             shard_map_kwargs=shard_map_kwargs,
-            key=key_temporal
+            key=key_temporal,
+            **kwargs
         )
 
         self.flip_block = RecurrentBlock(
             width=width,
             num_heads=num_heads,
             lru_width=lru_width,
-            conv1d_temporal_width=conv1d_temporal_width,
+            conv1d_size=conv1d_size,
             shard_map_kwargs=shard_map_kwargs,
             key=key_temporal
         ) if bidir else None
@@ -243,7 +251,7 @@ class ResidualBlock(eqx.Module):
 
         self.mlp = MLPBlock(
             width=width,
-            expanded_width=mlp_expanded_width,
+            expanded_width=mlp_width,
             key=key_mlp
         )
 
@@ -285,6 +293,7 @@ class RecurrentGemmaModel(eqx.Module):
         shard_map_kwargs = None,
         **kwargs
     ):
+
         key, in_key, out_key, *subkeys = jax.random.split(key, num_layers + 3)
         #mixer_cls = BidirMambaBlock if bidir else MambaBlock
         mixer_cls = ResidualBlock

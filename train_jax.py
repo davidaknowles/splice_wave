@@ -41,8 +41,9 @@ parser.add_argument('-l', '--layer_norm', action='store_true', help='Use LayerNo
 parser.add_argument('-c', '--context', action='store_true', help='Use context (species, tissues, assay). Only relevant for Mamba models')
 
 parser.add_argument('-i', '--inject', action='store_true', help='Use context (species, tissues, assay) at every position, not just h0.')
+parser.add_argument('-r', '--random', action='store_true', help='Random arch search.')
 
-#args = parser.parse_args(['BidirRG','-g','GRCg6a','-c'])
+#args = parser.parse_args(['RG','-g','GRCg6a','-c', '-r'])
 args = parser.parse_args()
 
 print(args)
@@ -170,8 +171,11 @@ else:
     train_dataset = epigenome_data.BedDataset(train_data, genome_dict, width = sequence_len, mask = args.mlm) 
     test_dataset = epigenome_data.BedDataset(test_data, genome_dict, width = sequence_len, mask = args.mlm) 
 
+import importlib
+importlib.reload(recurrentgemma)
 
 model_name = args.model
+config = {"lr" : 3e-3}
 
 if args.model == "Conv": 
     batch_size = 1024 
@@ -278,18 +282,33 @@ elif args.model in ["RG", "BidirRG"]:
     }
     if args.mlm and args.model=="RG": 
         print("Warning: RG is an odd choice for MLM, BidirRG would make more sense")
+
+    mychoice = lambda *g: int(np.random.choice(g))
+    
+    config = {
+        "power" : np.random.uniform(low = 4., high = 12),
+        "mlp_width" : np.random.randint(low = 32, high = 1025), 
+        "num_heads" : mychoice(1,2,4,8,16,32), 
+        "conv1d_size" : np.random.randint(low = 3, high = 12), 
+        "kernel_size" : mychoice(3,5,7,9,11),
+        "num_layers" : np.random.randint(low = 3, high = 13), 
+        "d_model" : 128 * np.random.randint(low = 1, high = 4)
+    }
+    # fixing lru_width == d_model because I'm tired
+    
     model = recurrentgemma.RecurrentGemmaModel(
         in_channels = n_channels,
         out_channels = n_channels, 
-        kernel_size = 7, 
-        num_layers = 6, 
-        num_heads = 4,
-        d_model = 128, 
+        **config, 
         bidir = args.model == "BidirRG", 
         context_dims = context_dims if args.context else [],
         shard_map_kwargs = shard_map_kwargs,
         key = jr.PRNGKey(0)
     )
+
+    config["lr"] = 10.0 ** np.random.uniform(-5, -3)
+    print(config)
+    
     model_name = ("context-" if args.context else "") + args.model
 else: 
     raise ValueError(f"Unknown model {args.model}")
@@ -321,17 +340,28 @@ sched = optax.warmup_cosine_decay_schedule(
     decay_steps = 20000 * 50, 
     end_value = 1e-4
 )
-optim = optax.adam(learning_rate = 3e-3)
+optim = optax.adam(learning_rate = config["lr"])
 opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
 label = "MLM" if args.mlm else "LM"
 results_dir = Path(f"jax_results/{model_name}_{label}_{args.genome_set}")
+
+patience = 5
+
+if args.random: 
+    from datetime import datetime
+    import json
+    results_dir = results_dir / datetime.now().strftime("%m%d_%H%M")
+    patience = 2 # more stringent
+    
 results_dir.mkdir(exist_ok = True, parents = True)
+
+with open(results_dir / "config.json", "w") as json_file:
+    json.dump(config, json_file, default=lambda obj: obj.item())
 
 train_losses = []
 test_losses = []
 
-patience = 5
 patience_counter = patience
 best_val_loss = np.inf
 
@@ -369,31 +399,31 @@ for epoch in range(30):
         if patience_counter <= 0:
             #model = eqx.tree_deserialise_leaves(results_dir / "checkpoint.pkl", model_original) # this would only be useful if we were doing something else with model afterward
             break
+
+if False: 
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    from pathlib import Path
     
-
-
-import matplotlib.pyplot as plt
-import pandas as pd
-from pathlib import Path
-
-# MLM wiki: Mamba >> everything (no Charformer res?) 
-# LM wiki: mamba >> everything. no charformer because it can't do LM
-# LM small: mamba > conv > convformer > transformer
-# MLM small: transformer > conv/mamba > conformer/charformer. (although transformer is unstable at end?)
-
-# TODO: 
-# Transformer, Charformer MLM wiki
-# mamba MLM small
-line_styles = ['--', ':', '-.', ':', '--', ':', '-.']
-basedir = Path("jax_results")
-for i,results_dir in enumerate(basedir.glob("*Ma*_LM_small")): 
-    fn = results_dir / "metrics.tsv"
-    if not fn.exists(): 
-        continue
-    metrics = pd.read_csv(fn, sep="\t")
-    name = results_dir.name
-    #plt.plot(metrics["train_loss"], label = f"{name}_train")
-    plt.plot(metrics["test_loss"], linestyle=line_styles[i], label = f"{name}_test", alpha = 0.6)
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-plt.legend()
+    # MLM wiki: Mamba >> everything (no Charformer res?) 
+    # LM wiki: mamba >> everything. no charformer because it can't do LM
+    # LM small: mamba > conv > convformer > transformer
+    # MLM small: transformer > conv/mamba > conformer/charformer. (although transformer is unstable at end?)
+    
+    # TODO: 
+    # Transformer, Charformer MLM wiki
+    # mamba MLM small
+    plt.figure(figsize=(10,8))
+    line_styles = ['--', ':', '-.', ':']
+    basedir = Path("jax_results")
+    for i,results_dir in enumerate(basedir.glob("*_MLM_small")): 
+        fn = results_dir / "metrics.tsv"
+        if not fn.exists(): 
+            continue
+        metrics = pd.read_csv(fn, sep="\t")
+        name = results_dir.name
+        #plt.plot(metrics["train_loss"], label = f"{name}_train")
+        plt.plot(metrics["test_loss"], linestyle=line_styles[i % len(line_styles)], label = f"{name}_test")
+        plt.xlabel("Epoch")
+        plt.ylabel("Loss")
+    plt.legend()
