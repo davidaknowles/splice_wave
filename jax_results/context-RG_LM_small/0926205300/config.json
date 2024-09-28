@@ -1,0 +1,1 @@
+{"power": 8.849661605500401, "mlp_width": 280, "num_heads": 8, "conv1d_size": 8, "kernel_size": 3, "num_layers": 12, "d_model": 384, "lr": 0.0004087633751543131}
