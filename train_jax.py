@@ -15,6 +15,7 @@ from utils import RateTracker
 import pandas as pd
 from pathlib import Path
 import time
+import os
 import eqx_modules
 import eqx_transformer
 import charformer_jax
