@@ -25,6 +25,8 @@ import wiki_data
 import argparse
 import recurrentgemma
 
+import wandb
+
 #jax.config.update("jax_debug_nans", True)
 
 parser = argparse.ArgumentParser()
@@ -344,7 +346,8 @@ optim = optax.adam(learning_rate = config["lr"])
 opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
 label = "MLM" if args.mlm else "LM"
-results_dir = Path(f"jax_results/{model_name}_{label}_{args.genome_set}")
+experiment_name = f"{model_name}_{label}_{args.genome_set}"
+results_dir = Path(f"jax_results/{experiment_name}")
 
 patience = 5
 
@@ -353,6 +356,8 @@ if args.random:
     import json
     results_dir = results_dir / datetime.now().strftime("%m%d%H%M%S")
     patience = 2 # more stringent
+
+    wandb.init(project="epigemma", experiment = experiment_name, config = config)
     
 results_dir.mkdir(exist_ok = True, parents = True)
 
