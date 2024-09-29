@@ -306,7 +306,7 @@ elif args.model in ["RG", "BidirRG"]:
         key = jr.PRNGKey(0)
     )
 
-    config["lr"] = 10.0 ** np.random.uniform(-5, -3)
+    config["lr"] = 10.0 ** np.random.uniform(-4, -2)
     print(config)
     
     model_name = ("context-" if args.context else "") + args.model
