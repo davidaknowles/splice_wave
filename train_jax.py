@@ -351,13 +351,16 @@ results_dir = Path(f"jax_results/{experiment_name}")
 
 patience = 5
 
+subdir = "base"
 if args.random: 
     from datetime import datetime
     import json
-    results_dir = results_dir / datetime.now().strftime("%m%d%H%M%S")
+    subdir = datetime.now().strftime("%m%d%H%M%S")
+    results_dir = results_dir / subdir 
     patience = 2 # more stringent
 
-    wandb.init(project="epigemma", experiment = experiment_name, config = config)
+os.environ["WANDB_SILENT"] = "true"
+wandb.init(project=experiment_name, name = subdir, config = config)
     
 results_dir.mkdir(exist_ok = True, parents = True)
 
@@ -394,9 +397,12 @@ for epoch in range(30):
     epoch_time = time.time() - start_time
     print(f"Epoch:{epoch} train_loss:{train_loss:.5} test_loss:{test_loss:.5} took {epoch_time:.2}s patience {patience_counter}")
     pd.DataFrame({"train_loss": train_losses, "test_loss" : test_losses}).to_csv(metrics_file, sep = "\t", index = False)
+    wandb.log({"train_loss": train_loss, "test_loss": test_loss})
 
     if test_loss < best_val_loss: # only checkpoint best
         eqx.tree_serialise_leaves(checkpoint_file, model)
+        wandb.save(checkpoint_file, base_path = results_dir, policy = "now")
+        
         best_val_loss = test_loss
         patience_counter = patience
     else:
