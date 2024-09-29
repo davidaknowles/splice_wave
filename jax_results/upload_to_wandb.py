@@ -20,10 +20,13 @@ for resdir in resdirs:
     with open(resdir / 'config.json', 'r') as file:
         config = json.load(file)
 
+    checkpoint_file = resdir / "checkpoint.pkl"
     if checkpoint_file.exists(): 
         wandb.init(project="context-RG_LM_small", name = resdir.name, config = config)
         for i in range(len(metrics)): 
             wandb.log({"train_loss": metrics.loc[i,"train_loss"], "test_loss": metrics.loc[i,"test_loss"]})
-        checkpoint_file = resdir / "checkpoint.pkl"
         wandb.save(checkpoint_file, base_path=resdir, policy="now")
         wandb.finish()
+    
+    config["test_loss"] = metrics["test_loss"].min()
+    res.append(config)
