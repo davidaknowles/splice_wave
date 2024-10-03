@@ -293,9 +293,9 @@ elif args.model in ["RG", "BidirRG"]:
         "mlp_width" : np.random.randint(low = 32, high = 1025), 
         "num_heads" : mychoice(1,2,4,8,16,32), 
         "conv1d_size" : np.random.randint(low = 3, high = 12), 
-        "kernel_size" : mychoice(3,5,7,9,11),
-        "num_layers" : np.random.randint(low = 3, high = 13), 
-        "d_model" : 128 * np.random.randint(low = 1, high = 4)
+        "kernel_size" : mychoice(5,7,9,11),
+        "num_layers" : np.random.randint(low = 6, high = 13), 
+        "d_model" : 128 * np.random.randint(low = 2, high = 4)
     }
     # fixing lru_width == d_model because I'm tired
     
@@ -309,7 +309,7 @@ elif args.model in ["RG", "BidirRG"]:
         key = jr.PRNGKey(0)
     )
 
-    config["lr"] = 10.0 ** np.random.uniform(-4, -2)
+    config["lr"] = 10.0 ** np.random.uniform(-4, -3)
     print(config)
     
     model_name = ("context-" if args.context else "") + args.model
@@ -383,7 +383,7 @@ if checkpoint_file.exists():
     test_losses = df['test_loss'].tolist()
     best_val_loss = np.min(test_losses)
 
-for epoch in range(30): 
+for epoch in range(100): 
     # training loop
     start_time = time.time()
     np.random.seed( time.time_ns() % (2**32) )
