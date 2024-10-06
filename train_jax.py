@@ -15,6 +15,8 @@ from utils import RateTracker
 import pandas as pd
 from pathlib import Path
 import time
+from datetime import datetime
+import json
 import os
 import eqx_modules
 import eqx_transformer
@@ -46,7 +48,7 @@ parser.add_argument('-c', '--context', action='store_true', help='Use context (s
 parser.add_argument('-i', '--inject', action='store_true', help='Use context (species, tissues, assay) at every position, not just h0.')
 parser.add_argument('-r', '--random', action='store_true', help='Random arch search.')
 
-#args = parser.parse_args(['RG','-g','GRCg6a','-c', '-r'])
+#args = parser.parse_args(['RG','-g','wiki'])
 args = parser.parse_args()
 
 print(args)
@@ -287,17 +289,26 @@ elif args.model in ["RG", "BidirRG"]:
         print("Warning: RG is an odd choice for MLM, BidirRG would make more sense")
 
     mychoice = lambda *g: int(np.random.choice(g))
-    
-    config = {
-        "power" : np.random.uniform(low = 4., high = 12),
-        "mlp_width" : np.random.randint(low = 32, high = 1025), 
-        "num_heads" : mychoice(1,2,4,8,16,32), 
-        "conv1d_size" : np.random.randint(low = 3, high = 12), 
-        "kernel_size" : mychoice(5,7,9,11),
-        "num_layers" : np.random.randint(low = 6, high = 13), 
-        "d_model" : 128 * np.random.randint(low = 2, high = 4)
-    }
-    # fixing lru_width == d_model because I'm tired
+
+    if args.random: 
+        config = {
+            "power" : np.random.uniform(low = 4., high = 12),
+            "mlp_width" : np.random.randint(low = 32, high = 1025), 
+            "num_heads" : mychoice(0,2,4,8,16,32), # num_heads==0 uses minGRU! 
+            "conv1d_size" : np.random.randint(low = 3, high = 12), 
+            "kernel_size" : mychoice(5,7,9,11),
+            "num_layers" : np.random.randint(low = 6, high = 13), 
+            "d_model" : 128 * np.random.randint(low = 2, high = 4), # fixing lru_width == d_model because I'm tired
+            "gated_mlp" : np.random.rand() < 0.5
+        }
+    else: 
+        config = { 
+            "kernel_size" : 7, 
+            "num_layers" : 6, 
+            "d_model" : 256,
+            "num_heads" : 0, 
+            "gated_mlp" : False
+        }
     
     model = recurrentgemma.RecurrentGemmaModel(
         in_channels = n_channels,
@@ -354,14 +365,12 @@ patience = 5
 
 subdir = "base"
 if args.random: 
-    from datetime import datetime
-    import json
     subdir = datetime.now().strftime("%m%d%H%M%S")
     results_dir = results_dir / subdir 
     patience = 2 # more stringent
 
-os.environ["WANDB_SILENT"] = "true"
-wandb.init(project=experiment_name, name = subdir, config = config)
+    os.environ["WANDB_SILENT"] = "true"
+    wandb.init(project=experiment_name, name = subdir, config = config)
     
 results_dir.mkdir(exist_ok = True, parents = True)
 
@@ -398,11 +407,14 @@ for epoch in range(100):
     epoch_time = time.time() - start_time
     print(f"Epoch:{epoch} train_loss:{train_loss:.5} test_loss:{test_loss:.5} took {epoch_time:.2}s patience {patience_counter}")
     pd.DataFrame({"train_loss": train_losses, "test_loss" : test_losses}).to_csv(metrics_file, sep = "\t", index = False)
-    wandb.log({"train_loss": train_loss, "test_loss": test_loss})
+    if args.random:
+        wandb.log({"train_loss": train_loss, "test_loss": test_loss})
 
     if test_loss < best_val_loss: # only checkpoint best
         eqx.tree_serialise_leaves(checkpoint_file, model)
-        wandb.save(checkpoint_file, base_path = results_dir, policy = "now")
+
+        if args.random:
+            wandb.save(checkpoint_file, base_path = results_dir, policy = "now")
         
         best_val_loss = test_loss
         patience_counter = patience

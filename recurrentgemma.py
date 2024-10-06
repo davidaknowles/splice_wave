@@ -123,6 +123,42 @@ class RGLRU(eqx.Module):
     
         return y
 
+class minGRU(eqx.Module):
+    width: int
+    z_gate: eqx.Module
+    shard_map_kwargs: dict | None
+
+    def __init__(self, width: int, key=None, shard_map_kwargs = None):
+
+        self.width = width
+        self.shard_map_kwargs = shard_map_kwargs
+
+        key_a, key_input, key_a_gate = jax.random.split(key, 3)
+
+        self.z_gate = nn.Linear(width, width, key=key)
+
+    def __call__(self, x: jax.Array, h0 = None) -> jax.Array:
+        bs, l, _ = x.shape # batch_size, seq_length, width
+
+        g = jax.vmap(jax.vmap(self.z_gate))(x)
+        z = jax.nn.sigmoid(g)
+
+        if h0 is None: 
+            h0 = jnp.zeros_like(x[:,0,:]) 
+        
+        if self.shard_map_kwargs is None: 
+            f = plscan.lru_pallas_scan
+        else: 
+            f = shard_map.shard_map(plscan.lru_pallas_scan, **self.shard_map_kwargs)
+
+        y, last_h = f(
+            (1. - z) * x,
+            z,
+            h0
+        )
+    
+        return y
+
 class RecurrentBlock(eqx.Module):
     width: int
     num_heads: int
@@ -160,7 +196,8 @@ class RecurrentBlock(eqx.Module):
             ),
             nn.Lambda(jnp.transpose)])
         
-        self.lru = RGLRU(lru_width, num_heads, key=key_lru, shard_map_kwargs = shard_map_kwargs, **kwargs)
+        self.lru = minGRU(lru_width, key=key_lru, shard_map_kwargs = shard_map_kwargs) if (
+            num_heads==0) else RGLRU(lru_width, num_heads, key=key_lru, shard_map_kwargs = shard_map_kwargs, **kwargs) 
 
     def __call__(self, x: jax.Array, h0 = None) -> jax.Array:
         # y branch
@@ -196,12 +233,12 @@ class MLPBlock(eqx.Module):
         self.ffw_down = nn.Linear(expanded_width, width, key=key_down)
 
     def __call__(self, x: jax.Array) -> jax.Array:
-        out_1 = jax.vmap(jax.vmap(self.ffw_up_1))(x)
-        out_2 = jax.vmap(jax.vmap(self.ffw_up_2))(x)
+        out_1 = self.ffw_up_1(x)
+        out_2 = self.ffw_up_2(x)
 
         gate_value = jax.nn.gelu(out_1)
 
-        return jax.vmap(jax.vmap(self.ffw_down))(gate_value * out_2)
+        return self.ffw_down(gate_value * out_2)
 
 class ResidualBlock(eqx.Module):
 
@@ -215,6 +252,7 @@ class ResidualBlock(eqx.Module):
         self, 
         width: int, 
         num_heads: int, 
+        gated_mlp: bool = True, 
         bidir: bool = False, 
         mlp_width: int | None = None, 
         lru_width: int | None = None,
@@ -224,7 +262,7 @@ class ResidualBlock(eqx.Module):
         **kwargs
     ):
         
-        key_temporal, key_mlp = jax.random.split(key)
+        key_temporal, key_mlp, key_split = jax.random.split(key, 3)
 
         self.temporal_pre_norm = nn.RMSNorm(width)
 
@@ -244,7 +282,7 @@ class ResidualBlock(eqx.Module):
             lru_width=lru_width,
             conv1d_size=conv1d_size,
             shard_map_kwargs=shard_map_kwargs,
-            key=key_temporal
+            key=key_split
         ) if bidir else None
         
         self.channel_pre_norm = nn.RMSNorm(width)
@@ -252,6 +290,12 @@ class ResidualBlock(eqx.Module):
         self.mlp = MLPBlock(
             width=width,
             expanded_width=mlp_width,
+            key=key_mlp
+        ) if gated_mlp else nn.MLP(
+            width, 
+            width,
+            depth = 1, 
+            width_size = mlp_width or width, 
             key=key_mlp
         )
 
@@ -268,7 +312,7 @@ class ResidualBlock(eqx.Module):
         residual = x + raw_x
         x = jax.vmap(jax.vmap(self.channel_pre_norm))(residual)
 
-        return self.mlp(x) + residual
+        return jax.vmap(jax.vmap(self.mlp))(x) + residual
 
 
 
