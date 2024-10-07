@@ -333,6 +333,7 @@ class RecurrentGemmaModel(eqx.Module):
         key,
         num_heads = 4, 
         context_dims = [],
+        embedding_init = None,
         bidir = False, # not implemented yet
         shard_map_kwargs = None,
         **kwargs
@@ -365,10 +366,13 @@ class RecurrentGemmaModel(eqx.Module):
         ])
 
         embedding_keys = jax.random.split(key, len(context_dims))
+        if embedding_init is None: 
+            embedding_init = [ None for _ in context_dims ]
         self.context_embeddings = [
             nn.Embedding(
                 num_embeddings = context_dim, 
                 embedding_size = d_model, 
+                weight = embedding_init[i], 
                 key = embedding_keys[i])
             for i,context_dim in enumerate(context_dims)
         ]

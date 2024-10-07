@@ -29,6 +29,7 @@ import argparse
 import recurrentgemma
 
 import wandb
+import importlib
 
 #jax.config.update("jax_debug_nans", True)
 
@@ -48,12 +49,14 @@ parser.add_argument('-c', '--context', action='store_true', help='Use context (s
 parser.add_argument('-i', '--inject', action='store_true', help='Use context (species, tissues, assay) at every position, not just h0.')
 parser.add_argument('-r', '--random', action='store_true', help='Random arch search.')
 
-#args = parser.parse_args(['RG','-g','wiki'])
+parser.add_argument('-e', '--embedding_init', action='store_true', help='Clever tissue and species embedding initialization.')
+
+#args = parser.parse_args(['RG','-g','small', '-e'])
 args = parser.parse_args()
 
 print(args)
 
-#@eqx.filter_value_and_grad
+#@eqx.filter_value_and_grad # not needed here because we jit the whole training step
 def compute_loss(model, data):
     if args.mlm: 
         species, tissue, assay, one_hot_T, x, mask = data
@@ -160,7 +163,7 @@ else:
         genome_set = ["galGal5", "Xenopus_tropicalis_v9.1", "ARS1", "GRCm38", "GRCg6a"]
     else: 
         genome_set = [args.genome_set] # this should be a single genome, e.g. GRCg6a
-    bed_data, genome_dict = epigenome_data.load_data(genome_set, width = sequence_len) # ["GRCg6a"]
+    bed_data, genome_dict, tissue_embed, species_embed = epigenome_data.load_data(genome_set, width = sequence_len) # ["GRCg6a"]
     
     chrom1 = bed_data["chrom"] == "1"
     
@@ -176,7 +179,6 @@ else:
     train_dataset = epigenome_data.BedDataset(train_data, genome_dict, width = sequence_len, mask = args.mlm) 
     test_dataset = epigenome_data.BedDataset(test_data, genome_dict, width = sequence_len, mask = args.mlm) 
 
-import importlib
 importlib.reload(recurrentgemma)
 
 model_name = args.model
@@ -309,18 +311,31 @@ elif args.model in ["RG", "BidirRG"]:
             "num_heads" : 0, 
             "gated_mlp" : False
         }
-    
+
+    d_model = config["d_model"] 
+
+    def get_hve(embed): 
+        variances = np.var(embed, axis=0)
+        top_k_indices = np.argsort(variances)[-d_model:][::-1]
+        return embed[:, top_k_indices]
+
+    tissue_embed_np = get_hve(tissue_embed.to_numpy()) if args.embedding_init else None 
+
+    species_embed_np = get_hve(species_embed.to_numpy()) if args.embedding_init else None
+
     model = recurrentgemma.RecurrentGemmaModel(
         in_channels = n_channels,
         out_channels = n_channels, 
         **config, 
         bidir = args.model == "BidirRG", 
         context_dims = context_dims if args.context else [],
+        embedding_init = [ tissue_embed_np, species_embed_np, None ],
         shard_map_kwargs = shard_map_kwargs,
         key = jr.PRNGKey(0)
     )
 
     config["lr"] = 10.0 ** np.random.uniform(-4, -3)
+    config["embedding_init"] = args.embedding_init
     print(config)
     
     model_name = ("context-" if args.context else "") + args.model
