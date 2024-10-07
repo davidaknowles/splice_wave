@@ -35,7 +35,7 @@ import importlib
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument('model', type=str, help='Mamba, BidirMamba, Conv, Charformer, Transformer or Convformer')
+parser.add_argument('model', type=str, help='Mamba, BidirMamba, RG, BidirRG, Conv, Charformer, Transformer or Convformer')
 
 parser.add_argument('-g', '--genome_set', type=str, default = "all", help="all, small or a specific genome e.g. GRCg6a")
 
@@ -51,7 +51,7 @@ parser.add_argument('-r', '--random', action='store_true', help='Random arch sea
 
 parser.add_argument('-e', '--embedding_init', action='store_true', help='Clever tissue and species embedding initialization.')
 
-#args = parser.parse_args(['RG','-g','small', '-e'])
+#args = parser.parse_args(['BidirRG','-m','-g','GRCg6a','-e', '-c'])
 args = parser.parse_args()
 
 print(args)
@@ -296,20 +296,20 @@ elif args.model in ["RG", "BidirRG"]:
         config = {
             "power" : np.random.uniform(low = 4., high = 12),
             "mlp_width" : np.random.randint(low = 32, high = 1025), 
-            "num_heads" : mychoice(0,2,4,8,16,32), # num_heads==0 uses minGRU! 
+            "num_heads" : mychoice(2,4,8,16,32), # num_heads==0 uses minGRU! 
             "conv1d_size" : np.random.randint(low = 3, high = 12), 
             "kernel_size" : mychoice(5,7,9,11),
             "num_layers" : np.random.randint(low = 6, high = 13), 
             "d_model" : 128 * np.random.randint(low = 2, high = 4), # fixing lru_width == d_model because I'm tired
-            "gated_mlp" : np.random.rand() < 0.5
+            "gated_mlp" : True # np.random.rand() < 0.5
         }
     else: 
         config = { 
             "kernel_size" : 7, 
-            "num_layers" : 6, 
+            "num_layers" : 10, 
             "d_model" : 256,
-            "num_heads" : 0, 
-            "gated_mlp" : False
+            "num_heads" : 8, 
+            "gated_mlp" : True
         }
 
     d_model = config["d_model"] 
@@ -329,7 +329,7 @@ elif args.model in ["RG", "BidirRG"]:
         **config, 
         bidir = args.model == "BidirRG", 
         context_dims = context_dims if args.context else [],
-        embedding_init = [ tissue_embed_np, species_embed_np, None ],
+        embedding_init = [ species_embed_np, tissue_embed_np, None ],
         shard_map_kwargs = shard_map_kwargs,
         key = jr.PRNGKey(0)
     )
