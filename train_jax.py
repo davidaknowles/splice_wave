@@ -25,6 +25,8 @@ import mamba_tpu
 import wiki_data
 import argparse
 import recurrentgemma
+from datetime import datetime
+import json
 
 import wandb
 
@@ -46,10 +48,20 @@ parser.add_argument('-c', '--context', action='store_true', help='Use context (s
 parser.add_argument('-i', '--inject', action='store_true', help='Use context (species, tissues, assay) at every position, not just h0.')
 parser.add_argument('-r', '--random', action='store_true', help='Random arch search.')
 
+parser.add_argument('-p', '--checkpoint', type=str, default = "NA", help = "dir to restore from") 
+
 #args = parser.parse_args(['RG','-g','GRCg6a','-c', '-r'])
 args = parser.parse_args()
 
 print(args)
+
+def get_run_id(project, run_name):
+    api = wandb.Api()
+    runs = api.runs(project)
+    for run in runs:
+        if run.name == run_name:
+            return run.id
+    return None
 
 #@eqx.filter_value_and_grad
 def compute_loss(model, data):
@@ -298,6 +310,11 @@ elif args.model in ["RG", "BidirRG"]:
         "d_model" : 128 * np.random.randint(low = 2, high = 4)
     }
     # fixing lru_width == d_model because I'm tired
+    if args.checkpoint != "NA": 
+        with open(Path(args.checkpoint) / 'config.json', 'r') as file:
+            config = json.load(file)
+        lr = config["lr"]
+        del config["lr"]
     
     model = recurrentgemma.RecurrentGemmaModel(
         in_channels = n_channels,
@@ -309,7 +326,8 @@ elif args.model in ["RG", "BidirRG"]:
         key = jr.PRNGKey(0)
     )
 
-    config["lr"] = 10.0 ** np.random.uniform(-4, -3)
+    config["lr"] = lr if (args.checkpoint != "NA") else (10.0 ** np.random.uniform(-4, -3))
+        
     print(config)
     
     model_name = ("context-" if args.context else "") + args.model
@@ -348,40 +366,44 @@ opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
 label = "MLM" if args.mlm else "LM"
 experiment_name = f"{model_name}_{label}_{args.genome_set}"
-results_dir = Path(f"jax_results/{experiment_name}")
+results_dir = Path(args.checkpoint if (args.checkpoint != "NA") else f"jax_results/{experiment_name}") 
 
-patience = 5
+patience = 2 if args.random else 5
 
 subdir = "base"
-if args.random: 
-    from datetime import datetime
-    import json
+if args.random and (args.checkpoint == "NA"):
     subdir = datetime.now().strftime("%m%d%H%M%S")
     results_dir = results_dir / subdir 
-    patience = 2 # more stringent
 
 os.environ["WANDB_SILENT"] = "true"
-wandb.init(project=experiment_name, name = subdir, config = config)
-    
+
+if args.checkpoint == "NA":
+    wandb.init(project=experiment_name, name = subdir, config = config)
+else: 
+    name = results_dir.name
+    run_id = 
+    wandb.init(project=experiment_name, , resume = "must")
+
 results_dir.mkdir(exist_ok = True, parents = True)
 
-with open(results_dir / "config.json", "w") as json_file:
-    json.dump(config, json_file, default=lambda obj: obj.item())
-
-train_losses = []
-test_losses = []
-
 patience_counter = patience
-best_val_loss = np.inf
 
 checkpoint_file = results_dir / "checkpoint.pkl"
 metrics_file = results_dir / "metrics.tsv"
+
 if checkpoint_file.exists():
     model = eqx.tree_deserialise_leaves(checkpoint_file, model) 
     df = pd.read_csv(metrics_file, sep="\t")
     train_losses = df['train_loss'].tolist()
     test_losses = df['test_loss'].tolist()
     best_val_loss = np.min(test_losses)
+else: 
+    with open(results_dir / "config.json", "w") as json_file:
+        json.dump(config, json_file, default=lambda obj: obj.item())
+    train_losses = []
+    test_losses = []
+    best_val_loss = np.inf
+
 
 for epoch in range(100): 
     # training loop
@@ -439,3 +461,8 @@ if False:
         plt.xlabel("Epoch")
         plt.ylabel("Loss")
     plt.legend()
+    
+    project = "context-BidirRG_MLM_all"
+    run_name = "1003154521"
+    get_run_id(project, run_name)
+
