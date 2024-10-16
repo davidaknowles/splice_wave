@@ -15,6 +15,8 @@ from utils import RateTracker
 import pandas as pd
 from pathlib import Path
 import time
+from datetime import datetime
+import json
 import os
 import eqx_modules
 import eqx_transformer
@@ -29,12 +31,13 @@ from datetime import datetime
 import json
 
 import wandb
+import importlib
 
 #jax.config.update("jax_debug_nans", True)
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument('model', type=str, help='Mamba, BidirMamba, Conv, Charformer, Transformer or Convformer')
+parser.add_argument('model', type=str, help='Mamba, BidirMamba, RG, BidirRG, Conv, Charformer, Transformer or Convformer')
 
 parser.add_argument('-g', '--genome_set', type=str, default = "all", help="all, small or a specific genome e.g. GRCg6a")
 
@@ -50,7 +53,10 @@ parser.add_argument('-r', '--random', action='store_true', help='Random arch sea
 
 parser.add_argument('-p', '--checkpoint', type=str, default = "NA", help = "dir to restore from") 
 
+parser.add_argument('-e', '--embedding_init', action='store_true', help='Clever tissue and species embedding initialization.')
+
 #args = parser.parse_args(['RG','-g','GRCg6a','-c', '-r'])
+#args = parser.parse_args(['BidirRG','-m','-g','GRCg6a','-e', '-c'])
 args = parser.parse_args()
 
 print(args)
@@ -63,7 +69,7 @@ def get_run_id(project, run_name):
             return run.id
     return None
 
-#@eqx.filter_value_and_grad
+#@eqx.filter_value_and_grad # not needed here because we jit the whole training step
 def compute_loss(model, data):
     if args.mlm: 
         species, tissue, assay, one_hot_T, x, mask = data
@@ -170,7 +176,7 @@ else:
         genome_set = ["galGal5", "Xenopus_tropicalis_v9.1", "ARS1", "GRCm38", "GRCg6a"]
     else: 
         genome_set = [args.genome_set] # this should be a single genome, e.g. GRCg6a
-    bed_data, genome_dict = epigenome_data.load_data(genome_set, width = sequence_len) # ["GRCg6a"]
+    bed_data, genome_dict, tissue_embed, species_embed = epigenome_data.load_data(genome_set, width = sequence_len) # ["GRCg6a"]
     
     chrom1 = bed_data["chrom"] == "1"
     
@@ -186,7 +192,6 @@ else:
     train_dataset = epigenome_data.BedDataset(train_data, genome_dict, width = sequence_len, mask = args.mlm) 
     test_dataset = epigenome_data.BedDataset(test_data, genome_dict, width = sequence_len, mask = args.mlm) 
 
-import importlib
 importlib.reload(recurrentgemma)
 
 model_name = args.model
@@ -299,35 +304,58 @@ elif args.model in ["RG", "BidirRG"]:
         print("Warning: RG is an odd choice for MLM, BidirRG would make more sense")
 
     mychoice = lambda *g: int(np.random.choice(g))
-    
-    config = {
-        "power" : np.random.uniform(low = 4., high = 12),
-        "mlp_width" : np.random.randint(low = 32, high = 1025), 
-        "num_heads" : mychoice(1,2,4,8,16,32), 
-        "conv1d_size" : np.random.randint(low = 3, high = 12), 
-        "kernel_size" : mychoice(5,7,9,11),
-        "num_layers" : np.random.randint(low = 6, high = 13), 
-        "d_model" : 128 * np.random.randint(low = 2, high = 4)
-    }
-    # fixing lru_width == d_model because I'm tired
+
+    if args.random: 
+        config = {
+            "power" : np.random.uniform(low = 4., high = 12),
+            "mlp_width" : np.random.randint(low = 32, high = 1025), 
+            "num_heads" : mychoice(2,4,8,16,32), # num_heads==0 uses minGRU! 
+            "conv1d_size" : np.random.randint(low = 3, high = 12), 
+            "kernel_size" : mychoice(5,7,9,11),
+            "num_layers" : np.random.randint(low = 6, high = 13), 
+            "d_model" : 128 * np.random.randint(low = 2, high = 4), # fixing lru_width == d_model because I'm tired
+            "gated_mlp" : True # np.random.rand() < 0.5
+        }
+    else: 
+        config = { 
+            "kernel_size" : 7, 
+            "num_layers" : 10, 
+            "d_model" : 256,
+            "num_heads" : 8, 
+            "gated_mlp" : True
+        }
+
     if args.checkpoint != "NA": 
         with open(Path(args.checkpoint) / 'config.json', 'r') as file:
             config = json.load(file)
         lr = config["lr"]
         del config["lr"]
-    
+
+    d_model = config["d_model"] 
+
+    def get_hve(embed): 
+        variances = np.var(embed, axis=0)
+        top_k_indices = np.argsort(variances)[-d_model:][::-1]
+        return embed[:, top_k_indices]
+
+    tissue_embed_np = get_hve(tissue_embed.to_numpy()) if args.embedding_init else None 
+
+    species_embed_np = get_hve(species_embed.to_numpy()) if args.embedding_init else None
+
     model = recurrentgemma.RecurrentGemmaModel(
         in_channels = n_channels,
         out_channels = n_channels, 
         **config, 
         bidir = args.model == "BidirRG", 
         context_dims = context_dims if args.context else [],
+        embedding_init = [ species_embed_np, tissue_embed_np, None ],
         shard_map_kwargs = shard_map_kwargs,
         key = jr.PRNGKey(0)
     )
 
     config["lr"] = lr if (args.checkpoint != "NA") else (10.0 ** np.random.uniform(-4, -3))
-        
+    config["embedding_init"] = args.embedding_init
+
     print(config)
     
     model_name = ("context-" if args.context else "") + args.model
@@ -371,6 +399,7 @@ results_dir = Path(args.checkpoint if (args.checkpoint != "NA") else f"jax_resul
 patience = 2 if args.random else 5
 
 subdir = "base"
+
 if args.random and (args.checkpoint == "NA"):
     subdir = datetime.now().strftime("%m%d%H%M%S")
     results_dir = results_dir / subdir 
@@ -380,9 +409,8 @@ os.environ["WANDB_SILENT"] = "true"
 if args.checkpoint == "NA":
     wandb.init(project=experiment_name, name = subdir, config = config)
 else: 
-    name = results_dir.name
-    run_id = 
-    wandb.init(project=experiment_name, , resume = "must")
+    run_id = get_run_id(project, run_name = results_dir.name)
+    wandb.init(project=experiment_name, id = run_id, resume = "must")
 
 results_dir.mkdir(exist_ok = True, parents = True)
 
@@ -404,7 +432,6 @@ else:
     test_losses = []
     best_val_loss = np.inf
 
-
 for epoch in range(100): 
     # training loop
     start_time = time.time()
@@ -420,11 +447,14 @@ for epoch in range(100):
     epoch_time = time.time() - start_time
     print(f"Epoch:{epoch} train_loss:{train_loss:.5} test_loss:{test_loss:.5} took {epoch_time:.2}s patience {patience_counter}")
     pd.DataFrame({"train_loss": train_losses, "test_loss" : test_losses}).to_csv(metrics_file, sep = "\t", index = False)
-    wandb.log({"train_loss": train_loss, "test_loss": test_loss})
+    if args.random:
+        wandb.log({"train_loss": train_loss, "test_loss": test_loss})
 
     if test_loss < best_val_loss: # only checkpoint best
         eqx.tree_serialise_leaves(checkpoint_file, model)
-        wandb.save(checkpoint_file, base_path = results_dir, policy = "now")
+
+        if args.random:
+            wandb.save(checkpoint_file, base_path = results_dir, policy = "now")
         
         best_val_loss = test_loss
         patience_counter = patience

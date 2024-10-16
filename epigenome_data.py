@@ -126,8 +126,6 @@ def load_data(genome_subset = None, width = 1000):
     if genome_subset is not None: 
         bed_data = bed_data[ bed_data["genome"].isin(genome_subset) ]
     
-    
-    
     bed_data['tissue'] = bed_data['tissue'].fillna('None').astype("category")
     bed_data['species'] = bed_data['species'].astype("category")
     bed_data['assay'] = bed_data['assay'].astype("category")
@@ -135,7 +133,13 @@ def load_data(genome_subset = None, width = 1000):
     for col in ['tissue', 'species', 'assay']: 
         bed_data[col] = bed_data[col].cat.remove_unused_categories()
 
-    return bed_data, genome_dict
+    tissue_embeddings = pd.read_parquet(vertebrate_epigenomes / "tissue_embedding.parquet")
+    tissue_embeddings = tissue_embeddings.loc[ bed_data.tissue.cat.categories.tolist(), :]
+
+    species_embeddings = pd.read_parquet(vertebrate_epigenomes / "species_embed.parquet")
+    species_embeddings = species_embeddings.loc[ bed_data.species.cat.categories.tolist(), :]
+
+    return bed_data, genome_dict, tissue_embeddings, species_embeddings
 
 if __name__ == "__main__":
 
