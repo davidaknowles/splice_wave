@@ -27,14 +27,17 @@ import mamba_tpu
 import wiki_data
 import argparse
 import recurrentgemma
+from datetime import datetime
+import json
 
 import wandb
+import importlib
 
 #jax.config.update("jax_debug_nans", True)
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument('model', type=str, help='Mamba, BidirMamba, Conv, Charformer, Transformer or Convformer')
+parser.add_argument('model', type=str, help='Mamba, BidirMamba, RG, BidirRG, Conv, Charformer, Transformer or Convformer')
 
 parser.add_argument('-g', '--genome_set', type=str, default = "all", help="all, small or a specific genome e.g. GRCg6a")
 
@@ -48,12 +51,25 @@ parser.add_argument('-c', '--context', action='store_true', help='Use context (s
 parser.add_argument('-i', '--inject', action='store_true', help='Use context (species, tissues, assay) at every position, not just h0.')
 parser.add_argument('-r', '--random', action='store_true', help='Random arch search.')
 
-#args = parser.parse_args(['RG','-g','wiki'])
+parser.add_argument('-p', '--checkpoint', type=str, default = "NA", help = "dir to restore from") 
+
+parser.add_argument('-e', '--embedding_init', action='store_true', help='Clever tissue and species embedding initialization.')
+
+#args = parser.parse_args(['RG','-g','GRCg6a','-c', '-r'])
+#args = parser.parse_args(['BidirRG','-m','-g','GRCg6a','-e', '-c'])
 args = parser.parse_args()
 
 print(args)
 
-#@eqx.filter_value_and_grad
+def get_run_id(project, run_name):
+    api = wandb.Api()
+    runs = api.runs(project)
+    for run in runs:
+        if run.name == run_name:
+            return run.id
+    return None
+
+#@eqx.filter_value_and_grad # not needed here because we jit the whole training step
 def compute_loss(model, data):
     if args.mlm: 
         species, tissue, assay, one_hot_T, x, mask = data
@@ -160,7 +176,7 @@ else:
         genome_set = ["galGal5", "Xenopus_tropicalis_v9.1", "ARS1", "GRCm38", "GRCg6a"]
     else: 
         genome_set = [args.genome_set] # this should be a single genome, e.g. GRCg6a
-    bed_data, genome_dict = epigenome_data.load_data(genome_set, width = sequence_len) # ["GRCg6a"]
+    bed_data, genome_dict, tissue_embed, species_embed = epigenome_data.load_data(genome_set, width = sequence_len) # ["GRCg6a"]
     
     chrom1 = bed_data["chrom"] == "1"
     
@@ -176,7 +192,6 @@ else:
     train_dataset = epigenome_data.BedDataset(train_data, genome_dict, width = sequence_len, mask = args.mlm) 
     test_dataset = epigenome_data.BedDataset(test_data, genome_dict, width = sequence_len, mask = args.mlm) 
 
-import importlib
 importlib.reload(recurrentgemma)
 
 model_name = args.model
@@ -294,33 +309,53 @@ elif args.model in ["RG", "BidirRG"]:
         config = {
             "power" : np.random.uniform(low = 4., high = 12),
             "mlp_width" : np.random.randint(low = 32, high = 1025), 
-            "num_heads" : 0, #mychoice(0,2,4,8,16,32), # num_heads==0 uses minGRU! 
+            "num_heads" : mychoice(2,4,8,16,32), # num_heads==0 uses minGRU! 
             "conv1d_size" : np.random.randint(low = 3, high = 12), 
             "kernel_size" : mychoice(5,7,9,11),
             "num_layers" : np.random.randint(low = 6, high = 13), 
             "d_model" : 128 * np.random.randint(low = 2, high = 4), # fixing lru_width == d_model because I'm tired
-            "gated_mlp" : np.random.rand() < 0.5
+            "gated_mlp" : True # np.random.rand() < 0.5
         }
     else: 
         config = { 
             "kernel_size" : 7, 
-            "num_layers" : 6, 
+            "num_layers" : 10, 
             "d_model" : 256,
-            "num_heads" : 0, 
-            "gated_mlp" : False
+            "num_heads" : 8, 
+            "gated_mlp" : True
         }
-    
+
+    if args.checkpoint != "NA": 
+        with open(Path(args.checkpoint) / 'config.json', 'r') as file:
+            config = json.load(file)
+        lr = config["lr"]
+        del config["lr"]
+
+    d_model = config["d_model"] 
+
+    def get_hve(embed): 
+        variances = np.var(embed, axis=0)
+        top_k_indices = np.argsort(variances)[-d_model:][::-1]
+        return embed[:, top_k_indices]
+
+    tissue_embed_np = get_hve(tissue_embed.to_numpy()) if args.embedding_init else None 
+
+    species_embed_np = get_hve(species_embed.to_numpy()) if args.embedding_init else None
+
     model = recurrentgemma.RecurrentGemmaModel(
         in_channels = n_channels,
         out_channels = n_channels, 
         **config, 
         bidir = args.model == "BidirRG", 
         context_dims = context_dims if args.context else [],
+        embedding_init = [ species_embed_np, tissue_embed_np, None ],
         shard_map_kwargs = shard_map_kwargs,
         key = jr.PRNGKey(0)
     )
 
-    config["lr"] = 10.0 ** np.random.uniform(-4, -3)
+    config["lr"] = lr if (args.checkpoint != "NA") else (10.0 ** np.random.uniform(-4, -3))
+    config["embedding_init"] = args.embedding_init
+
     print(config)
     
     model_name = ("context-" if args.context else "") + args.model
@@ -359,38 +394,43 @@ opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
 label = "MLM" if args.mlm else "LM"
 experiment_name = f"{model_name}_{label}_{args.genome_set}"
-results_dir = Path(f"jax_results/{experiment_name}")
+results_dir = Path(args.checkpoint if (args.checkpoint != "NA") else f"jax_results/{experiment_name}") 
 
-patience = 5
+patience = 2 if args.random else 5
 
 subdir = "base"
-if args.random: 
+
+if args.random and (args.checkpoint == "NA"):
     subdir = datetime.now().strftime("%m%d%H%M%S")
     results_dir = results_dir / subdir 
-    patience = 2 # more stringent
 
-    os.environ["WANDB_SILENT"] = "true"
+os.environ["WANDB_SILENT"] = "true"
+
+if args.checkpoint == "NA":
     wandb.init(project=experiment_name, name = subdir, config = config)
-    
+else: 
+    run_id = get_run_id(project, run_name = results_dir.name)
+    wandb.init(project=experiment_name, id = run_id, resume = "must")
+
 results_dir.mkdir(exist_ok = True, parents = True)
 
-with open(results_dir / "config.json", "w") as json_file:
-    json.dump(config, json_file, default=lambda obj: obj.item())
-
-train_losses = []
-test_losses = []
-
 patience_counter = patience
-best_val_loss = np.inf
 
 checkpoint_file = results_dir / "checkpoint.pkl"
 metrics_file = results_dir / "metrics.tsv"
+
 if checkpoint_file.exists():
     model = eqx.tree_deserialise_leaves(checkpoint_file, model) 
     df = pd.read_csv(metrics_file, sep="\t")
     train_losses = df['train_loss'].tolist()
     test_losses = df['test_loss'].tolist()
     best_val_loss = np.min(test_losses)
+else: 
+    with open(results_dir / "config.json", "w") as json_file:
+        json.dump(config, json_file, default=lambda obj: obj.item())
+    train_losses = []
+    test_losses = []
+    best_val_loss = np.inf
 
 for epoch in range(100): 
     # training loop
@@ -451,3 +491,8 @@ if False:
         plt.xlabel("Epoch")
         plt.ylabel("Loss")
     plt.legend()
+    
+    project = "context-BidirRG_MLM_all"
+    run_name = "1003154521"
+    get_run_id(project, run_name)
+
