@@ -294,7 +294,7 @@ elif args.model in ["RG", "BidirRG"]:
         config = {
             "power" : np.random.uniform(low = 4., high = 12),
             "mlp_width" : np.random.randint(low = 32, high = 1025), 
-            "num_heads" : mychoice(0,2,4,8,16,32), # num_heads==0 uses minGRU! 
+            "num_heads" : 0, #mychoice(0,2,4,8,16,32), # num_heads==0 uses minGRU! 
             "conv1d_size" : np.random.randint(low = 3, high = 12), 
             "kernel_size" : mychoice(5,7,9,11),
             "num_layers" : np.random.randint(low = 6, high = 13), 
