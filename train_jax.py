@@ -329,7 +329,9 @@ elif args.model in ["RG", "BidirRG"]:
         with open(Path(args.checkpoint) / 'config.json', 'r') as file:
             config = json.load(file)
         lr = config["lr"]
+        assert config["embedding_init"] == args.embedding_init
         del config["lr"]
+        del config["embedding_init"]
 
     d_model = config["d_model"] 
 
@@ -398,11 +400,9 @@ results_dir = Path(args.checkpoint if (args.checkpoint != "NA") else f"jax_resul
 
 patience = 2 if args.random else 5
 
-subdir = "base"
+subdir = datetime.now().strftime("%m%d%H%M%S") if (args.random and (args.checkpoint == "NA")) else "base"
 
-if args.random and (args.checkpoint == "NA"):
-    subdir = datetime.now().strftime("%m%d%H%M%S")
-    results_dir = results_dir / subdir 
+results_dir = results_dir / subdir 
 
 os.environ["WANDB_SILENT"] = "true"
 
@@ -447,14 +447,12 @@ for epoch in range(100):
     epoch_time = time.time() - start_time
     print(f"Epoch:{epoch} train_loss:{train_loss:.5} test_loss:{test_loss:.5} took {epoch_time:.2}s patience {patience_counter}")
     pd.DataFrame({"train_loss": train_losses, "test_loss" : test_losses}).to_csv(metrics_file, sep = "\t", index = False)
-    if args.random:
-        wandb.log({"train_loss": train_loss, "test_loss": test_loss})
+    wandb.log({"train_loss": train_loss, "test_loss": test_loss})
 
     if test_loss < best_val_loss: # only checkpoint best
         eqx.tree_serialise_leaves(checkpoint_file, model)
 
-        if args.random:
-            wandb.save(checkpoint_file, base_path = results_dir, policy = "now")
+        wandb.save(checkpoint_file, base_path = results_dir, policy = "now")
         
         best_val_loss = test_loss
         patience_counter = patience
