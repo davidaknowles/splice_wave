@@ -51,7 +51,7 @@ parser.add_argument('-c', '--context', action='store_true', help='Use context (s
 parser.add_argument('-i', '--inject', action='store_true', help='Use context (species, tissues, assay) at every position, not just h0.')
 parser.add_argument('-r', '--random', action='store_true', help='Random arch search.')
 
-parser.add_argument('-p', '--checkpoint', type=str, default = "NA", help = "dir to restore from") 
+parser.add_argument('-p', '--checkpoint', type=str, default = "NA", help = "dir to restore from (should contain config.json, checkpoint.pkl and metrics.tsv") 
 
 parser.add_argument('-e', '--embedding_init', action='store_true', help='Clever tissue and species embedding initialization.')
 
@@ -329,9 +329,11 @@ elif args.model in ["RG", "BidirRG"]:
         with open(Path(args.checkpoint) / 'config.json', 'r') as file:
             config = json.load(file)
         lr = config["lr"]
-        assert config["embedding_init"] == args.embedding_init
-        del config["lr"]
-        del config["embedding_init"]
+        del config["lr"] # need to delete these since not accepted by model setup
+
+        if "embedding_init" in config: 
+            assert config["embedding_init"] == args.embedding_init
+            del config["embedding_init"]
 
     d_model = config["d_model"] 
 
