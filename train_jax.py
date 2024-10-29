@@ -409,7 +409,7 @@ os.environ["WANDB_SILENT"] = "true"
 if args.checkpoint == "NA":
     wandb.init(project=experiment_name, name = subdir, config = config)
 else: 
-    run_id = get_run_id(project, run_name = results_dir.name)
+    run_id = get_run_id(experiment_name, run_name = results_dir.name)
     wandb.init(project=experiment_name, id = run_id, resume = "must")
 
 results_dir.mkdir(exist_ok = True, parents = True)
