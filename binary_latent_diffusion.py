@@ -1,7 +1,7 @@
 # Based on https://github.com/lucidrains/denoising-diffusion-pytorch
 # Plus bits pulled from https://github.com/ZeWang95/BinaryLatentDiffusion (which is pretty complex overall) 
 # Binary Latent Diffusion paper: https://arxiv.org/abs/2304.04820
-# This implementation is just the DM part so isn't actually latent
+# This implementation is just the diffusion model (DM) part so isn't actually latent
 
 import math
 from pathlib import Path

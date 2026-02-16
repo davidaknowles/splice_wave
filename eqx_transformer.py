@@ -100,6 +100,9 @@ class TransformerStack(eqx.Module):
         return x
 
 if __name__=="__main__": 
+
+    # very simple test to make sure the transformer stack runs and produces output of the right shape, not meant to be a real test of the model's capabilities
+
     # Define parameters
     num_layers = 12    # Number of transformer blocks (BERT-base has 12)
     d_model = 768      # Hidden size (BERT-base has 768)

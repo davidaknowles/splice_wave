@@ -1,3 +1,5 @@
+# cleaned up lucidrains implementation of Charformer, based on the paper "Charformer: Fast Character Transformers via Gradient-Based Subword Tokenization"
+
 import math
 from math import gcd
 import functools
